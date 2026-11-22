@@ -119,6 +119,8 @@ if "messages" not in st.session_state:
     st.session_state.messages = []
 if "question_count" not in st.session_state:
     st.session_state.question_count = 0
+if "problem_image_b64" not in st.session_state:
+    st.session_state.problem_image_b64 = None
 
 # --- 3. 관리자 모드 감지 (URL에 ?admin=true 또는 세션 로그인 상태) ---
 is_admin_param = False
@@ -206,8 +208,9 @@ with st.sidebar:
     - 정답을 바로 주지 않고 개념과 힌트로 생각하게 돕습니다.
     - 1인당 하루 최대 5회까지 질문할 수 있습니다.
     """)
-    if st.button("대화 내용 초기화", use_container_width=True):
+    if st.button("새 문제 시작", use_container_width=True):
         st.session_state.messages = []
+        st.session_state.problem_image_b64 = None
         st.rerun()
 
 # --- 5. 메인 화면 ---
@@ -240,7 +243,10 @@ if not st.session_state.is_authenticated:
 remaining_count = max(0, DAILY_LIMIT - st.session_state.question_count)
 
 if not st.session_state.is_admin:
-    st.info(f"⏳ **오늘 남은 질문 횟수:** `{remaining_count}회` / `{DAILY_LIMIT}회`")
+    st.info(
+        f"⏳ **오늘 남은 새 문제:** `{remaining_count}회` / `{DAILY_LIMIT}회`  "
+        "\n현재 문제의 후속 대화는 횟수가 차감되지 않아요."
+    )
 else:
     st.success("👑 관리자 모드: 질문 횟수 무제한")
 
@@ -252,8 +258,8 @@ for msg in st.session_state.messages:
             st.image(msg["image"], caption="업로드한 문제", use_container_width=True)
 
 # 질문 횟수 소진 여부 확인
-if not st.session_state.is_admin and remaining_count <= 0:
-    st.warning("⚠️ **오늘 사용 가능한 질문 횟수(5회)를 모두 사용했습니다!**\n\n내일 다시 만나요. 오늘 배운 내용을 복습해 보세요! 화이팅! 📚")
+if not st.session_state.is_admin and remaining_count <= 0 and not st.session_state.messages:
+    st.warning("⚠️ **오늘 사용 가능한 새 문제 5개를 모두 사용했습니다!**\n\n내일 다시 만나요. 오늘 배운 내용을 복습해 보세요! 화이팅! 📚")
     st.stop()
 
 uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드 (선택 사항)", type=["png", "jpg", "jpeg", "pdf"])
@@ -270,12 +276,17 @@ SYSTEM_PROMPT = """
 3. 문제 해결을 위한 첫 걸음인 [1단계 힌트]와 핵심 질문 하나를 던져 학생이 스스로 생각하게 유도합니다.
 4. 학생이 "잘 모르겠어", "다음 힌트 줘", "풀어줘"라고 요청하면 그 다음 단계 힌트나 풀이를 단계적으로 제시합니다.
 5. 모든 수학 공식이나 기호는 반드시 마크다운 수식 기호인 $...$(인라인) 또는 $$...$$(블록)를 사용하여 학생이 읽기 쉽게 작성하세요.
+6. 학생의 대답이 맞는지 짧게 피드백한 뒤, 이미 제시한 힌트를 반복하지 말고 바로 다음 단계로 이어갑니다.
+7. 학생이 명시적으로 최종 풀이를 요청하기 전에는 한 번에 전체 정답을 공개하지 않습니다.
+8. "다음 힌트", "왜?", "여기까지 했어"같은 짧은 후속 질문도 지금까지의 대화와 연결해 이해합니다.
 """
 
 if user_question:
     if not api_key:
         st.error("⚠️ 선생님의 API Key 설정이 필요합니다. 관리자 메뉴에서 API 키를 확인해 주세요.")
         st.stop()
+
+    is_new_problem = len(st.session_state.messages) == 0
 
     # 요청 단위 네트워크 상한. 전체 응답 시간은 Interactions 호출에서 별도로 제한합니다.
     client = genai.Client(
@@ -287,10 +298,24 @@ if user_question:
     current_pdf_bytes = None
     current_pdf_name = ""
 
+    # 최근 대화를 함께 보내 "다음 힌트"가 앞선 문제와 풀이를 이어가게 합니다.
+    recent_messages = st.session_state.messages[-8:]
+    history_lines = []
+    for msg in recent_messages:
+        speaker = "학생" if msg["role"] == "user" else "AI 수학쌤"
+        history_lines.append(f"[{speaker}]: {msg['content']}")
+    history_text = "\n".join(history_lines) if history_lines else "(첫 질문)"
+
     # --- 파일 처리 ---
     input_payload = [{
         "type": "text",
-        "text": f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}",
+        "text": (
+            f"{SYSTEM_PROMPT}\n\n"
+            f"[지금까지의 대화]\n{history_text}\n\n"
+            f"[현재 학생 질문]: {user_question}\n\n"
+            "이전 대화의 문제와 힌트 단계를 이어서 답하세요. "
+            "이미 제시한 힌트를 반복하지 마세요."
+        ),
     }]
 
     if uploaded_file is not None:
@@ -305,9 +330,10 @@ if user_question:
                 pix = page.get_pixmap(dpi=140, alpha=False)
                 pdf_image = Image.open(BytesIO(pix.tobytes("png")))
                 pdf_jpeg = image_to_fast_jpeg(pdf_image)
+                st.session_state.problem_image_b64 = base64.b64encode(pdf_jpeg).decode("utf-8")
                 input_payload.append({
                     "type": "image",
-                    "data": base64.b64encode(pdf_jpeg).decode("utf-8"),
+                    "data": st.session_state.problem_image_b64,
                     "mime_type": "image/jpeg",
                 })
         else:
@@ -316,11 +342,19 @@ if user_question:
                 image = image.convert("RGB")
             current_image = image
             fast_jpeg = image_to_fast_jpeg(image)
+            st.session_state.problem_image_b64 = base64.b64encode(fast_jpeg).decode("utf-8")
             input_payload.append({
                 "type": "image",
-                "data": base64.b64encode(fast_jpeg).decode("utf-8"),
+                "data": st.session_state.problem_image_b64,
                 "mime_type": "image/jpeg",
             })
+    elif st.session_state.problem_image_b64:
+        # 후속 질문에는 처음 올린 문제 이미지를 자동으로 다시 참조합니다.
+        input_payload.append({
+            "type": "image",
+            "data": st.session_state.problem_image_b64,
+            "mime_type": "image/jpeg",
+        })
 
     save_student_submission(user_question, current_image, current_pdf_bytes, current_pdf_name)
 
@@ -377,7 +411,8 @@ if user_question:
                 "role": "assistant",
                 "content": full_reply
             })
-            st.session_state.question_count += 1
+            if is_new_problem:
+                st.session_state.question_count += 1
             st.rerun()
 
         except Exception as e:
