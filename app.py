@@ -17,25 +17,33 @@ QUESTIONS_DIR = BASE_DIR / "student_questions"
 QUESTIONS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = QUESTIONS_DIR / "questions_log.csv"
 
-# 기본 비밀번호 초기화 (파일이 없을 때)
+# 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
 DEFAULT_SUBSCRIBER_PW = "수학1234"
-DEFAULT_ADMIN_PIN = "7777"  # 관리자용 초기 PIN 번호
+DEFAULT_ADMIN_PIN = "7777"
 
 def get_secret(key_name, default_val=""):
-    """Streamlit Cloud의 secrets 또는 환경변수, 로컬 파일 순으로 읽기"""
-    # 1. Streamlit Cloud Secrets
+    """관리자가 화면에서 변경한 파일 우선 확인 후 Streamlit Secrets 확인"""
+    # 1. 관리자가 화면에서 변경하여 저장한 파일 우선
+    if key_name == "ADMIN_PIN" and ADMIN_PIN_FILE.exists():
+        val = ADMIN_PIN_FILE.read_text(encoding="utf-8").strip()
+        if val:
+            return val
+    if key_name == "SUBSCRIBER_PW" and PW_FILE.exists():
+        val = PW_FILE.read_text(encoding="utf-8").strip()
+        if val:
+            return val
+    if key_name == "GEMINI_API_KEY" and KEY_FILE.exists():
+        val = KEY_FILE.read_text(encoding="utf-8").strip()
+        if val:
+            return val
+
+    # 2. Streamlit Cloud Secrets (초기 기본값)
     try:
         if key_name in st.secrets:
             return str(st.secrets[key_name]).strip()
     except Exception:
         pass
-    # 2. 로컬 파일
-    if key_name == "GEMINI_API_KEY" and KEY_FILE.exists():
-        return KEY_FILE.read_text(encoding="utf-8").strip()
-    if key_name == "SUBSCRIBER_PW" and PW_FILE.exists():
-        return PW_FILE.read_text(encoding="utf-8").strip()
-    if key_name == "ADMIN_PIN" and ADMIN_PIN_FILE.exists():
-        return ADMIN_PIN_FILE.read_text(encoding="utf-8").strip()
+
     # 3. 환경변수
     return os.environ.get(key_name, default_val)
 
@@ -87,71 +95,87 @@ if "is_admin" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# --- 3. 사이드바: 관리자 전용 메뉴 ---
+# --- 3. 관리자 모드 감지 (URL에 ?admin=true 또는 세션 로그인 상태) ---
+is_admin_param = False
+try:
+    admin_query = st.query_params.get("admin", "")
+    if isinstance(admin_query, list):
+        admin_query = admin_query[0] if admin_query else ""
+    is_admin_param = str(admin_query).lower() in ["true", "1", "yes"]
+except Exception:
+    is_admin_param = False
+
+show_admin_menu = is_admin_param or st.session_state.is_admin
+
+# --- 4. 사이드바 구성 ---
 with st.sidebar:
-    st.header("⚙️ 채널 관리 메뉴")
-    
-    with st.expander("👑 관리자 설정 (선생님 전용)", expanded=st.session_state.is_admin):
-        if not st.session_state.is_admin:
-            admin_input = st.text_input("관리자 PIN 번호 입력", type="password", help="초기 기본 PIN: 7777")
-            if st.button("관리자 로그인", use_container_width=True):
-                if admin_input == current_admin_pin:
-                    st.session_state.is_admin = True
-                    st.success("관리자로 인증되었습니다!")
-                    st.rerun()
-                else:
-                    st.error("PIN 번호가 일치하지 않습니다.")
-        else:
-            st.success("🟢 관리자 로그인 상태")
-            
-            # [1] 구독자 비밀번호 1초 변경
-            st.subheader("🔑 이번 주 구독자 비밀번호")
-            new_sub_pw = st.text_input("현재 구독자 비밀번호 변경", value=current_subscriber_pw)
-            if st.button("💾 구독자 비밀번호 즉시 변경", use_container_width=True):
-                if new_sub_pw.strip():
-                    save_local_file(PW_FILE, new_sub_pw)
-                    st.success(f"비밀번호가 [{new_sub_pw}]로 변경되었습니다!")
-                    st.rerun()
-            
-            st.markdown("---")
-            # [2] 관리자 PIN 변경
-            with st.expander("🔒 관리자 PIN 번호 변경"):
-                new_pin = st.text_input("새 관리자 PIN 번호", type="password")
-                if st.button("PIN 번호 변경", use_container_width=True):
-                    if new_pin.strip():
-                        save_local_file(ADMIN_PIN_FILE, new_pin)
-                        st.success("관리자 PIN이 변경되었습니다!")
+    if show_admin_menu:
+        st.header("⚙️ 채널 관리 메뉴")
+        with st.expander("👑 관리자 설정 (선생님 전용)", expanded=True):
+            if not st.session_state.is_admin:
+                admin_input = st.text_input("관리자 PIN 번호 입력", type="password")
+                if st.button("관리자 로그인", use_container_width=True):
+                    if admin_input == current_admin_pin:
+                        st.session_state.is_admin = True
+                        st.success("관리자로 인증되었습니다!")
                         st.rerun()
-
-            st.markdown("---")
-            # [3] Gemini API 키 설정
-            with st.expander("🔑 Gemini API Key 설정"):
-                new_key = st.text_input("API Key 입력", value=api_key, type="password")
-                if st.button("API Key 저장", use_container_width=True):
-                    if new_key.strip():
-                        save_local_file(KEY_FILE, new_key)
-                        st.success("API Key 저장 완료!")
+                    else:
+                        st.error("PIN 번호가 일치하지 않습니다.")
+            else:
+                st.success("🟢 관리자 로그인 상태")
+                
+                # [1] 구독자 비밀번호 1초 변경
+                st.subheader("🔑 이번 주 구독자 비밀번호")
+                new_sub_pw = st.text_input("현재 구독자 비밀번호 변경", value=current_subscriber_pw)
+                if st.button("💾 구독자 비밀번호 즉시 변경", use_container_width=True):
+                    if new_sub_pw.strip():
+                        save_local_file(PW_FILE, new_sub_pw)
+                        st.success(f"비밀번호가 [{new_sub_pw}]로 변경되었습니다!")
                         st.rerun()
+                
+                st.markdown("---")
+                # [2] 관리자 PIN 변경
+                with st.expander("🔒 관리자 PIN 번호 변경"):
+                    new_pin = st.text_input("새 관리자 PIN 번호", type="password")
+                    if st.button("PIN 번호 변경 저장", use_container_width=True):
+                        if new_pin.strip():
+                            save_local_file(ADMIN_PIN_FILE, new_pin)
+                            st.success("관리자 PIN이 성공적으로 변경되었습니다!")
+                            st.rerun()
 
-            st.markdown("---")
-            # [4] 수집된 질문 통계 및 로그
-            st.subheader("📊 콘텐츠 소재 보관함")
-            saved_images = list(QUESTIONS_DIR.glob("*.jpg"))
-            st.write(f"📸 수집된 문제 사진: **{len(saved_images)}개**")
-            
-            if LOG_FILE.exists():
-                import pandas as pd
-                try:
-                    df = pd.read_csv(LOG_FILE, encoding="utf-8-sig")
-                    st.dataframe(df.tail(5), use_container_width=True)
-                except Exception:
-                    pass
-            
-            if st.button("🚪 관리자 로그아웃", use_container_width=True):
-                st.session_state.is_admin = False
-                st.rerun()
+                st.markdown("---")
+                # [3] Gemini API 키 설정
+                with st.expander("🔑 Gemini API Key 설정"):
+                    new_key = st.text_input("API Key 입력", value=api_key, type="password")
+                    if st.button("API Key 저장", use_container_width=True):
+                        if new_key.strip():
+                            save_local_file(KEY_FILE, new_key)
+                            st.success("API Key 저장 완료!")
+                            st.rerun()
 
-    st.markdown("---")
+                st.markdown("---")
+                # [4] 수집된 질문 통계 및 로그
+                st.subheader("📊 콘텐츠 소재 보관함")
+                saved_images = list(QUESTIONS_DIR.glob("*.jpg"))
+                st.write(f"📸 수집된 문제 사진: **{len(saved_images)}개**")
+                
+                if LOG_FILE.exists():
+                    import pandas as pd
+                    try:
+                        df = pd.read_csv(LOG_FILE, encoding="utf-8-sig")
+                        st.dataframe(df.tail(5), use_container_width=True)
+                    except Exception:
+                        pass
+                
+                if st.button("🚪 관리자 로그아웃", use_container_width=True):
+                    st.session_state.is_admin = False
+                    st.rerun()
+
+        st.markdown("---")
+    else:
+        # 일반 학생 접속 시에는 친절하고 깔끔한 안내만 표시!
+        st.header("📐 AI 수학 튜터")
+
     st.markdown("""
     **💡 이용 팁:**
     - 문제 사진을 찍어 올릴 수 있습니다.
@@ -162,7 +186,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.rerun()
 
-# --- 4. 메인 화면 ---
+# --- 5. 메인 화면 ---
 st.title("📐 나만의 AI 수학 튜터")
 st.caption("유튜브 [AI 수학 선생님] 구독자 전용 1:1 맞춤형 힌트 서비스")
 
@@ -186,9 +210,9 @@ if not st.session_state.is_authenticated:
         else:
             st.error("비밀번호가 일치하지 않습니다. 최신 유튜브 영상이나 커뮤니티를 확인해 주세요!")
     
-    st.stop()  # 인증되지 않으면 아래 질문창이 아예 실행되지 않음
+    st.stop()
 
-# --- 5. 인증 완료된 학생용 튜터 화면 ---
+# --- 6. 인증 완료된 학생용 튜터 화면 ---
 st.success("🔓 구독자 인증 완료! 질문이나 문제 사진을 올려보세요.")
 
 # 시스템 프롬프트
@@ -204,14 +228,12 @@ SYSTEM_PROMPT = """
 5. 모든 수학 공식이나 기호는 반드시 마크다운 수식 기호인 $...$(인라인) 또는 $$...$$(블록)를 사용하여 학생이 읽기 쉽게 작성하세요.
 """
 
-# 기존 대화 내역 출력
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
         if "image" in msg and msg["image"] is not None:
             st.image(msg["image"], caption="업로드한 문제", use_container_width=True)
 
-# 학생 입력창
 uploaded_file = st.file_uploader("문제 사진 업로드 (선택 사항)", type=["png", "jpg", "jpeg"])
 user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (예: 1단계 힌트 줘, 어떻게 시작해?)")
 
@@ -239,10 +261,8 @@ if user_question:
             "mime_type": "image/jpeg"
         })
 
-    # 학생이 올린 질문 및 사진 자동 저장
     save_student_submission(user_question, current_image)
 
-    # 화면 표시
     with st.chat_message("user"):
         st.markdown(user_question)
         if current_image:
@@ -254,7 +274,6 @@ if user_question:
         "image": current_image
     })
 
-    # AI 답변 생성
     with st.chat_message("assistant"):
         with st.spinner("선생님이 문제를 분석하고 있어요... 💭"):
             try:
