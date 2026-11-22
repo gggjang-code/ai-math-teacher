@@ -352,11 +352,14 @@ if user_question:
                 model="gemini-3.8-flash",
                 input=input_payload,
                 stream=True,
+                store=False,
                 automatic_continuation=False,
                 timeout=INTERACTION_TIMEOUT_SECONDS,
                 generation_config={
                     "max_output_tokens": MAX_RESPONSE_TOKENS,
                     "temperature": 0.3,
+                    "thinking_level": "low",
+                    "thinking_summaries": "none",
                 },
             )
             for event in stream:
