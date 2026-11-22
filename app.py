@@ -77,7 +77,7 @@ def save_student_submission(user_question, image_obj=None):
 
 # --- 2. 페이지 기본 설정 ---
 st.set_page_config(
-    page_title="AI 수학 튜터",
+    page_title="AI 수학쌤 - 1:1 맞춤형 튜터",
     page_icon="📐",
     layout="centered"
 )
@@ -175,7 +175,7 @@ with st.sidebar:
 
         st.markdown("---")
     else:
-        st.header("📐 AI 수학 튜터")
+        st.header("📐 AI 수학쌤 튜터")
 
     st.markdown("""
     **💡 이용 팁:**
@@ -188,13 +188,13 @@ with st.sidebar:
         st.rerun()
 
 # --- 5. 메인 화면 ---
-st.title("📐 나만의 AI 수학 튜터")
-st.caption("유튜브 [AI 수학 선생님] 구독자 전용 1:1 맞춤형 힌트 서비스")
+st.title("📐 AI 수학쌤 (AI Math Teacher)")
+st.caption("유튜브 [@AI수학쌤] 구독자 전용 1:1 맞춤형 힌트 과외 서비스")
 
 # 🔒 [구독자 인증 화면]
 if not st.session_state.is_authenticated:
     st.markdown("---")
-    st.info("🔒 **본 서비스는 유튜브 채널 구독자 전용 서비스입니다.**")
+    st.info("🔒 **본 서비스는 유튜브 [AI 수학쌤] 채널 구독자 전용 서비스입니다.**")
     st.markdown("유튜브 최신 영상 더보기란 또는 커뮤니티 탭에 공지된 **이번 주 구독자 비밀번호**를 입력해 주세요.")
     
     col_pw, col_btn = st.columns([3, 1])
@@ -214,7 +214,6 @@ if not st.session_state.is_authenticated:
     st.stop()
 
 # --- 6. 인증 완료된 학생용 튜터 화면 ---
-# ⏳ 1일 5회 질문 제한 계산
 remaining_count = max(0, DAILY_LIMIT - st.session_state.question_count)
 
 if not st.session_state.is_admin:
@@ -239,7 +238,7 @@ user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (�
 
 # 시스템 프롬프트
 SYSTEM_PROMPT = """
-당신은 대한민국 최고의 친절하고 유능한 'AI 수학 선생님(수학 튜터)'입니다.
+당신은 대한민국 최고의 친절하고 유능한 유튜브 'AI 수학쌤'입니다.
 학생이 문제를 올렸을 때 절대로 처음부터 최종 답을 바로 전부 알려주지 마세요.
 
 [답변 원칙]
@@ -274,10 +273,8 @@ if user_question:
             "mime_type": "image/jpeg"
         })
 
-    # 학생이 올린 질문 및 사진 자동 저장
     save_student_submission(user_question, current_image)
 
-    # 화면 표시
     with st.chat_message("user"):
         st.markdown(user_question)
         if current_image:
@@ -289,9 +286,8 @@ if user_question:
         "image": current_image
     })
 
-    # AI 답변 생성
     with st.chat_message("assistant"):
-        with st.spinner("선생님이 문제를 분석하고 있어요... 💭"):
+        with st.spinner("AI 수학쌤이 문제를 분석하고 있어요... 💭"):
             try:
                 response = client.interactions.create(
                     model="gemini-4-hydrogen",
@@ -305,7 +301,6 @@ if user_question:
                     "content": ai_reply
                 })
                 
-                # ★ 질문 1회 사용 차감 및 새로고침 반영
                 st.session_state.question_count += 1
                 st.rerun()
 
