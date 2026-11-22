@@ -6,6 +6,7 @@ import datetime
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
+import fitz  # PyMuPDF
 from google import genai
 
 # --- 1. 기본 경로 및 파일 관리 ---
@@ -55,14 +56,18 @@ def save_local_file(file_path, value_str):
         return False
 
 # --- 학생 질문 및 사진 자동 저장 ---
-def save_student_submission(user_question, image_obj=None):
+def save_student_submission(user_question, image_obj=None, pdf_bytes=None, pdf_name=""):
     now = datetime.datetime.now()
     timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-    saved_img_name = ""
+    saved_file_name = ""
 
-    if image_obj is not None:
-        saved_img_name = f"{timestamp_str}_problem.jpg"
-        img_path = QUESTIONS_DIR / saved_img_name
+    if pdf_bytes is not None:
+        saved_file_name = f"{timestamp_str}_{pdf_name}"
+        pdf_path = QUESTIONS_DIR / saved_file_name
+        pdf_path.write_bytes(pdf_bytes)
+    elif image_obj is not None:
+        saved_file_name = f"{timestamp_str}_problem.jpg"
+        img_path = QUESTIONS_DIR / saved_file_name
         # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
         save_obj = image_obj.convert("RGB") if image_obj.mode in ("RGBA", "P", "LA", "CMYK") else image_obj
         save_obj.save(img_path, format="JPEG")
@@ -73,7 +78,7 @@ def save_student_submission(user_question, image_obj=None):
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow(["일시", "문제사진파일명", "학생질문내용"])
-            writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), saved_img_name if saved_img_name else "사진없음", user_question])
+            writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), saved_file_name if saved_file_name else "파일없음", user_question])
     except Exception as e:
         st.error(f"질문 기록 저장 중 오류: {e}")
 
@@ -235,7 +240,7 @@ if not st.session_state.is_admin and remaining_count <= 0:
     st.warning("⚠️ **오늘 사용 가능한 질문 횟수(5회)를 모두 사용했습니다!**\n\n내일 다시 만나요. 오늘 배운 내용을 복습해 보세요! 화이팅! 📚")
     st.stop()
 
-uploaded_file = st.file_uploader("문제 사진 업로드 (선택 사항)", type=["png", "jpg", "jpeg"])
+uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드 (선택 사항)", type=["png", "jpg", "jpeg", "pdf"])
 user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (예: 1단계 힌트 줘, 어떻게 시작해?)")
 
 # 시스템 프롬프트
@@ -259,31 +264,57 @@ if user_question:
     client = genai.Client(api_key=api_key)
 
     current_image = None
+    current_pdf_bytes = None
+    current_pdf_name = ""
     input_payload = [{"type": "text", "text": f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}"}]
 
     if uploaded_file is not None:
-        image = Image.open(uploaded_file)
-        # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
-        if image.mode in ("RGBA", "P", "LA", "CMYK"):
-            image = image.convert("RGB")
-        current_image = image
-        
-        buffered = BytesIO()
-        image.save(buffered, format="JPEG")
-        img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        
-        input_payload.append({
-            "type": "image",
-            "data": img_b64,
-            "mime_type": "image/jpeg"
-        })
+        file_type = uploaded_file.type  # e.g. "application/pdf" or "image/jpeg"
 
-    save_student_submission(user_question, current_image)
+        if file_type == "application/pdf":
+            # --- PDF 처리 ---
+            current_pdf_bytes = uploaded_file.read()
+            current_pdf_name = uploaded_file.name
+            pdf_b64 = base64.b64encode(current_pdf_bytes).decode("utf-8")
+            input_payload.append({
+                "type": "file",
+                "data": pdf_b64,
+                "mime_type": "application/pdf"
+            })
+        else:
+            # --- 이미지 처리 ---
+            image = Image.open(uploaded_file)
+            # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
+            if image.mode in ("RGBA", "P", "LA", "CMYK"):
+                image = image.convert("RGB")
+            current_image = image
+
+            buffered = BytesIO()
+            image.save(buffered, format="JPEG")
+            img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+            input_payload.append({
+                "type": "image",
+                "data": img_b64,
+                "mime_type": "image/jpeg"
+            })
+
+    save_student_submission(user_question, current_image, current_pdf_bytes, current_pdf_name)
 
     with st.chat_message("user"):
         st.markdown(user_question)
         if current_image:
             st.image(current_image, caption="업로드한 문제", use_container_width=True)
+        elif current_pdf_bytes:
+            # PDF 첫 페이지를 미리보기로 렌더링
+            try:
+                pdf_doc = fitz.open(stream=current_pdf_bytes, filetype="pdf")
+                page = pdf_doc[0]
+                pix = page.get_pixmap(dpi=120)
+                img_data = pix.tobytes("png")
+                st.image(img_data, caption=f"📄 PDF: {current_pdf_name} ({pdf_doc.page_count}페이지)", use_container_width=True)
+            except Exception:
+                st.info(f"📄 PDF 업로드됨: {current_pdf_name}")
 
     st.session_state.messages.append({
         "role": "user",
