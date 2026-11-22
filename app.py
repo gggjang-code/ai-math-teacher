@@ -277,7 +277,6 @@ with st.sidebar:
                                 else:
                                     remaining_df.to_csv(LOG_FILE, index=False, encoding="utf-8-sig")
 
-                        st.session_state.admin_today_reset_confirmation = ""
                         st.success(
                             f"오늘 테스트 자료만 초기화했습니다. "
                             f"(파일 {removed_files}개, 로그 {removed_rows}건)"
