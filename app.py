@@ -277,7 +277,7 @@ if user_question:
             current_pdf_name = uploaded_file.name
             pdf_b64 = base64.b64encode(current_pdf_bytes).decode("utf-8")
             input_payload.append({
-                "type": "file",
+                "type": "document",
                 "data": pdf_b64,
                 "mime_type": "application/pdf"
             })
