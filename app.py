@@ -3,6 +3,7 @@ import base64
 import os
 import csv
 import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from io import BytesIO
 from PIL import Image
@@ -65,7 +66,7 @@ def save_local_file(file_path, value_str):
 
 # --- 학생 질문 및 사진 자동 저장 ---
 def save_student_submission(user_question, image_obj=None, pdf_bytes=None, pdf_name=""):
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(ZoneInfo("Asia/Seoul"))
     timestamp_str = now.strftime("%Y%m%d_%H%M%S")
     saved_file_name = ""
 
@@ -183,16 +184,105 @@ with st.sidebar:
                 st.markdown("---")
                 # [4] 수집된 질문 통계 및 로그
                 st.subheader("📊 콘텐츠 소재 보관함")
-                saved_images = list(QUESTIONS_DIR.glob("*.jpg"))
+                saved_images = sorted(
+                    [
+                        path
+                        for path in QUESTIONS_DIR.iterdir()
+                        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
+                    ],
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                saved_pdfs = sorted(QUESTIONS_DIR.glob("*.pdf"), reverse=True)
                 st.write(f"📸 수집된 문제 사진: **{len(saved_images)}개**")
+                st.write(f"📄 수집된 PDF: **{len(saved_pdfs)}개**")
+
+                today_kst = datetime.datetime.now(ZoneInfo("Asia/Seoul"))
+                today_date_text = today_kst.strftime("%Y-%m-%d")
+                today_file_prefix = today_kst.strftime("%Y%m%d")
+                today_media = [
+                    path
+                    for path in [*saved_images, *saved_pdfs]
+                    if path.name.startswith(today_file_prefix)
+                ]
+                today_log_count = 0
                 
                 if LOG_FILE.exists():
                     import pandas as pd
                     try:
                         df = pd.read_csv(LOG_FILE, encoding="utf-8-sig")
+                        if "일시" in df.columns:
+                            today_mask = df["일시"].astype(str).str.startswith(today_date_text)
+                            today_log_count = int(today_mask.sum())
                         st.dataframe(df.tail(5), use_container_width=True)
+                        st.download_button(
+                            "📥 전체 질문 내역 CSV 다운로드",
+                            data=LOG_FILE.read_bytes(),
+                            file_name="AI_수학쌤_학생질문_전체내역.csv",
+                            mime="text/csv",
+                            use_container_width=True,
+                        )
                     except Exception:
                         pass
+
+                if saved_images:
+                    with st.expander("🖼️ 학생 문제 사진 갤러리", expanded=False):
+                        selected_name = st.selectbox(
+                            "크게 볼 사진 선택",
+                            options=[path.name for path in saved_images],
+                            key="admin_gallery_selected_image",
+                        )
+                        selected_image = QUESTIONS_DIR / selected_name
+                        st.image(selected_image, caption=selected_name, use_container_width=True)
+                        st.download_button(
+                            "📥 선택한 문제 사진 다운로드",
+                            data=selected_image.read_bytes(),
+                            file_name=selected_name,
+                            mime="image/jpeg",
+                            use_container_width=True,
+                        )
+                else:
+                    st.caption("아직 수집된 문제 사진이 없습니다.")
+
+                with st.expander("🧹 오늘 테스트 자료만 초기화", expanded=False):
+                    st.write(
+                        f"{today_date_text}(한국 시간) 대상: "
+                        f"문제 파일 **{len(today_media)}개**, 질문 로그 **{today_log_count}건**"
+                    )
+                    st.caption("이전 날짜의 자료는 삭제되지 않습니다.")
+                    reset_text = st.text_input(
+                        "'오늘초기화'를 입력하세요",
+                        key="admin_today_reset_confirmation",
+                    )
+                    if st.button(
+                        "오늘 테스트 자료만 초기화",
+                        disabled=reset_text.strip() != "오늘초기화",
+                        use_container_width=True,
+                    ):
+                        removed_files = 0
+                        for stored_file in today_media:
+                            if stored_file.exists() and stored_file.is_file():
+                                stored_file.unlink()
+                                removed_files += 1
+
+                        removed_rows = 0
+                        if LOG_FILE.exists():
+                            log_df = pd.read_csv(LOG_FILE, encoding="utf-8-sig")
+                            if "일시" in log_df.columns:
+                                remove_mask = log_df["일시"].astype(str).str.startswith(today_date_text)
+                                removed_rows = int(remove_mask.sum())
+                                remaining_df = log_df.loc[~remove_mask]
+                                if remaining_df.empty:
+                                    LOG_FILE.unlink()
+                                else:
+                                    remaining_df.to_csv(LOG_FILE, index=False, encoding="utf-8-sig")
+
+                        st.session_state.admin_today_reset_confirmation = ""
+                        st.success(
+                            f"오늘 테스트 자료만 초기화했습니다. "
+                            f"(파일 {removed_files}개, 로그 {removed_rows}건)"
+                        )
+                        st.rerun()
                 
                 if st.button("🚪 관리자 로그아웃", use_container_width=True):
                     st.session_state.is_admin = False
