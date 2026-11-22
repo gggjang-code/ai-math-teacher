@@ -8,6 +8,7 @@ from io import BytesIO
 from PIL import Image
 import fitz  # PyMuPDF
 from google import genai
+from google.genai import types
 
 # --- 1. 기본 경로 및 파일 관리 ---
 BASE_DIR = Path(__file__).parent
@@ -20,6 +21,11 @@ LOG_FILE = QUESTIONS_DIR / "questions_log.csv"
 
 # 1인당 하루 질문 제한 횟수
 DAILY_LIMIT = 5
+
+# AI 응답 속도 설정: 원본 사진/PDF 전체를 보내지 않고 문제를 읽을 정도로만 축소합니다.
+MAX_IMAGE_SIDE = 1600
+GEMINI_TIMEOUT_MS = 30_000
+MAX_RESPONSE_TOKENS = 700
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
 DEFAULT_SUBSCRIBER_PW = "수학1234"
@@ -81,6 +87,14 @@ def save_student_submission(user_question, image_obj=None, pdf_bytes=None, pdf_n
             writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), saved_file_name if saved_file_name else "파일없음", user_question])
     except Exception as e:
         st.error(f"질문 기록 저장 중 오류: {e}")
+
+def image_to_fast_jpeg(image_obj):
+    """Gemini에 보낼 이미지를 눈으로 읽기에 충분한 크기의 JPEG로 축소한다."""
+    image = image_obj.convert("RGB") if image_obj.mode != "RGB" else image_obj.copy()
+    image.thumbnail((MAX_IMAGE_SIDE, MAX_IMAGE_SIDE), Image.Resampling.LANCZOS)
+    buffered = BytesIO()
+    image.save(buffered, format="JPEG", quality=82, optimize=True)
+    return buffered.getvalue()
 
 # --- 2. 페이지 기본 설정 ---
 st.set_page_config(
@@ -261,43 +275,43 @@ if user_question:
         st.error("⚠️ 선생님의 API Key 설정이 필요합니다. 관리자 메뉴에서 API 키를 확인해 주세요.")
         st.stop()
 
-    client = genai.Client(api_key=api_key)
+    # 네트워크/서버 지연으로 무제한 기다리지 않도록 30초 상한을 둡니다.
+    client = genai.Client(
+        api_key=api_key,
+        http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+    )
 
     current_image = None
     current_pdf_bytes = None
     current_pdf_name = ""
-    input_payload = [{"type": "text", "text": f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}"}]
+
+    # --- 파일 처리 ---
+    parts = [types.Part.from_text(text=f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}")]
 
     if uploaded_file is not None:
-        file_type = uploaded_file.type  # e.g. "application/pdf" or "image/jpeg"
+        file_type = uploaded_file.type
 
         if file_type == "application/pdf":
-            # --- PDF 처리 ---
             current_pdf_bytes = uploaded_file.read()
             current_pdf_name = uploaded_file.name
-            pdf_b64 = base64.b64encode(current_pdf_bytes).decode("utf-8")
-            input_payload.append({
-                "type": "document",
-                "data": pdf_b64,
-                "mime_type": "application/pdf"
-            })
+            # 학생 화면에서도 첫 페이지만 미리보기하므로 AI에게도 첫 페이지를 축소 이미지로 보냅니다.
+            with fitz.open(stream=current_pdf_bytes, filetype="pdf") as pdf_doc:
+                page = pdf_doc[0]
+                pix = page.get_pixmap(dpi=140, alpha=False)
+                pdf_image = Image.open(BytesIO(pix.tobytes("png")))
+                parts.append(types.Part.from_bytes(
+                    data=image_to_fast_jpeg(pdf_image),
+                    mime_type="image/jpeg",
+                ))
         else:
-            # --- 이미지 처리 ---
             image = Image.open(uploaded_file)
-            # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
             if image.mode in ("RGBA", "P", "LA", "CMYK"):
                 image = image.convert("RGB")
             current_image = image
-
-            buffered = BytesIO()
-            image.save(buffered, format="JPEG")
-            img_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-
-            input_payload.append({
-                "type": "image",
-                "data": img_b64,
-                "mime_type": "image/jpeg"
-            })
+            parts.append(types.Part.from_bytes(
+                data=image_to_fast_jpeg(image),
+                mime_type="image/jpeg",
+            ))
 
     save_student_submission(user_question, current_image, current_pdf_bytes, current_pdf_name)
 
@@ -306,7 +320,6 @@ if user_question:
         if current_image:
             st.image(current_image, caption="업로드한 문제", use_container_width=True)
         elif current_pdf_bytes:
-            # PDF 첫 페이지를 미리보기로 렌더링
             try:
                 pdf_doc = fitz.open(stream=current_pdf_bytes, filetype="pdf")
                 page = pdf_doc[0]
@@ -323,22 +336,30 @@ if user_question:
     })
 
     with st.chat_message("assistant"):
-        with st.spinner("AI 수학쌤이 문제를 분석하고 있어요... 💭"):
-            try:
-                response = client.interactions.create(
-                    model="gemini-3.8-flash",
-                    input=input_payload
+        placeholder = st.empty()
+        full_reply = ""
+        try:
+            stream = client.models.generate_content_stream(
+                model="gemini-3.8-flash",
+                contents=[types.Content(role="user", parts=parts)],
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(thinking_budget=0),
+                    max_output_tokens=MAX_RESPONSE_TOKENS,
+                    temperature=0.3,
                 )
-                ai_reply = response.output_text
-                st.markdown(ai_reply)
-                
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": ai_reply
-                })
-                
-                st.session_state.question_count += 1
-                st.rerun()
+            )
+            for chunk in stream:
+                if chunk.text:
+                    full_reply += chunk.text
+                    placeholder.markdown(full_reply + "▌")
+            placeholder.markdown(full_reply)
 
-            except Exception as e:
-                st.error(f"오류가 발생했습니다: {e}")
+            st.session_state.messages.append({
+                "role": "assistant",
+                "content": full_reply
+            })
+            st.session_state.question_count += 1
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"오류가 발생했습니다: {e}")
