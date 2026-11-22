@@ -27,6 +27,7 @@ MAX_IMAGE_SIDE = 1600
 GEMINI_TIMEOUT_MS = 60_000
 INTERACTION_TIMEOUT_SECONDS = 45
 MAX_RESPONSE_TOKENS = 700
+GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
 DEFAULT_SUBSCRIBER_PW = "수학1234"
@@ -349,7 +350,7 @@ if user_question:
         full_reply = ""
         try:
             stream = client.interactions.create(
-                model="gemini-3.8-flash",
+                model=GEMINI_MODEL,
                 input=input_payload,
                 stream=True,
                 store=False,
@@ -358,7 +359,7 @@ if user_question:
                 generation_config={
                     "max_output_tokens": MAX_RESPONSE_TOKENS,
                     "temperature": 0.3,
-                    "thinking_level": "low",
+                    "thinking_level": "minimal",
                     "thinking_summaries": "none",
                 },
             )
