@@ -63,7 +63,9 @@ def save_student_submission(user_question, image_obj=None):
     if image_obj is not None:
         saved_img_name = f"{timestamp_str}_problem.jpg"
         img_path = QUESTIONS_DIR / saved_img_name
-        image_obj.save(img_path, format="JPEG")
+        # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
+        save_obj = image_obj.convert("RGB") if image_obj.mode in ("RGBA", "P", "LA", "CMYK") else image_obj
+        save_obj.save(img_path, format="JPEG")
 
     file_exists = LOG_FILE.exists()
     try:
@@ -175,7 +177,7 @@ with st.sidebar:
 
         st.markdown("---")
     else:
-        st.header("📐 AI 수학쌤 튜터")
+        st.header("📐 AI 수학쌤")
 
     st.markdown("""
     **💡 이용 팁:**
@@ -261,6 +263,9 @@ if user_question:
 
     if uploaded_file is not None:
         image = Image.open(uploaded_file)
+        # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
+        if image.mode in ("RGBA", "P", "LA", "CMYK"):
+            image = image.convert("RGB")
         current_image = image
         
         buffered = BytesIO()
