@@ -24,7 +24,8 @@ DAILY_LIMIT = 5
 
 # AI 응답 속도 설정: 원본 사진/PDF 전체를 보내지 않고 문제를 읽을 정도로만 축소합니다.
 MAX_IMAGE_SIDE = 1600
-GEMINI_TIMEOUT_MS = 30_000
+GEMINI_TIMEOUT_MS = 60_000
+INTERACTION_TIMEOUT_SECONDS = 45
 MAX_RESPONSE_TOKENS = 700
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
@@ -275,7 +276,7 @@ if user_question:
         st.error("⚠️ 선생님의 API Key 설정이 필요합니다. 관리자 메뉴에서 API 키를 확인해 주세요.")
         st.stop()
 
-    # 네트워크/서버 지연으로 무제한 기다리지 않도록 30초 상한을 둡니다.
+    # 요청 단위 네트워크 상한. 전체 응답 시간은 Interactions 호출에서 별도로 제한합니다.
     client = genai.Client(
         api_key=api_key,
         http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
@@ -286,7 +287,10 @@ if user_question:
     current_pdf_name = ""
 
     # --- 파일 처리 ---
-    parts = [types.Part.from_text(text=f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}")]
+    input_payload = [{
+        "type": "text",
+        "text": f"{SYSTEM_PROMPT}\n\n[사용자 질문]: {user_question}",
+    }]
 
     if uploaded_file is not None:
         file_type = uploaded_file.type
@@ -299,19 +303,23 @@ if user_question:
                 page = pdf_doc[0]
                 pix = page.get_pixmap(dpi=140, alpha=False)
                 pdf_image = Image.open(BytesIO(pix.tobytes("png")))
-                parts.append(types.Part.from_bytes(
-                    data=image_to_fast_jpeg(pdf_image),
-                    mime_type="image/jpeg",
-                ))
+                pdf_jpeg = image_to_fast_jpeg(pdf_image)
+                input_payload.append({
+                    "type": "image",
+                    "data": base64.b64encode(pdf_jpeg).decode("utf-8"),
+                    "mime_type": "image/jpeg",
+                })
         else:
             image = Image.open(uploaded_file)
             if image.mode in ("RGBA", "P", "LA", "CMYK"):
                 image = image.convert("RGB")
             current_image = image
-            parts.append(types.Part.from_bytes(
-                data=image_to_fast_jpeg(image),
-                mime_type="image/jpeg",
-            ))
+            fast_jpeg = image_to_fast_jpeg(image)
+            input_payload.append({
+                "type": "image",
+                "data": base64.b64encode(fast_jpeg).decode("utf-8"),
+                "mime_type": "image/jpeg",
+            })
 
     save_student_submission(user_question, current_image, current_pdf_bytes, current_pdf_name)
 
@@ -337,21 +345,28 @@ if user_question:
 
     with st.chat_message("assistant"):
         placeholder = st.empty()
+        placeholder.markdown("🔎 문제를 읽고 있어요...")
         full_reply = ""
         try:
-            stream = client.models.generate_content_stream(
+            stream = client.interactions.create(
                 model="gemini-3.8-flash",
-                contents=[types.Content(role="user", parts=parts)],
-                config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0),
-                    max_output_tokens=MAX_RESPONSE_TOKENS,
-                    temperature=0.3,
-                )
+                input=input_payload,
+                stream=True,
+                automatic_continuation=False,
+                timeout=INTERACTION_TIMEOUT_SECONDS,
+                generation_config={
+                    "max_output_tokens": MAX_RESPONSE_TOKENS,
+                    "temperature": 0.3,
+                },
             )
-            for chunk in stream:
-                if chunk.text:
-                    full_reply += chunk.text
+            for event in stream:
+                if event.event_type == "step.delta" and event.delta.type == "text":
+                    full_reply += event.delta.text
                     placeholder.markdown(full_reply + "▌")
+
+            if not full_reply:
+                raise RuntimeError("AI에서 답변 텍스트를 받지 못했습니다.")
+
             placeholder.markdown(full_reply)
 
             st.session_state.messages.append({
@@ -362,4 +377,8 @@ if user_question:
             st.rerun()
 
         except Exception as e:
-            st.error(f"오류가 발생했습니다: {e}")
+            error_text = str(e)
+            if "timed out" in error_text.lower() or "timeout" in error_text.lower():
+                st.error("응답이 지연되고 있어 45초 후 중단했어요. 잠시 후 다시 시도해 주세요.")
+            else:
+                st.error(f"오류가 발생했습니다: {e}")
