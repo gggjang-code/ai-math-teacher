@@ -17,13 +17,15 @@ QUESTIONS_DIR = BASE_DIR / "student_questions"
 QUESTIONS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = QUESTIONS_DIR / "questions_log.csv"
 
+# 1인당 하루 질문 제한 횟수
+DAILY_LIMIT = 5
+
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
 DEFAULT_SUBSCRIBER_PW = "수학1234"
 DEFAULT_ADMIN_PIN = "7777"
 
 def get_secret(key_name, default_val=""):
     """관리자가 화면에서 변경한 파일 우선 확인 후 Streamlit Secrets 확인"""
-    # 1. 관리자가 화면에서 변경하여 저장한 파일 우선
     if key_name == "ADMIN_PIN" and ADMIN_PIN_FILE.exists():
         val = ADMIN_PIN_FILE.read_text(encoding="utf-8").strip()
         if val:
@@ -37,14 +39,12 @@ def get_secret(key_name, default_val=""):
         if val:
             return val
 
-    # 2. Streamlit Cloud Secrets (초기 기본값)
     try:
         if key_name in st.secrets:
             return str(st.secrets[key_name]).strip()
     except Exception:
         pass
 
-    # 3. 환경변수
     return os.environ.get(key_name, default_val)
 
 def save_local_file(file_path, value_str):
@@ -94,6 +94,8 @@ if "is_admin" not in st.session_state:
     st.session_state.is_admin = False
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "question_count" not in st.session_state:
+    st.session_state.question_count = 0
 
 # --- 3. 관리자 모드 감지 (URL에 ?admin=true 또는 세션 로그인 상태) ---
 is_admin_param = False
@@ -122,7 +124,7 @@ with st.sidebar:
                     else:
                         st.error("PIN 번호가 일치하지 않습니다.")
             else:
-                st.success("🟢 관리자 로그인 상태")
+                st.success("🟢 관리자 로그인 상태 (질문 무제한)")
                 
                 # [1] 구독자 비밀번호 1초 변경
                 st.subheader("🔑 이번 주 구독자 비밀번호")
@@ -173,14 +175,13 @@ with st.sidebar:
 
         st.markdown("---")
     else:
-        # 일반 학생 접속 시에는 친절하고 깔끔한 안내만 표시!
         st.header("📐 AI 수학 튜터")
 
     st.markdown("""
     **💡 이용 팁:**
     - 문제 사진을 찍어 올릴 수 있습니다.
     - 정답을 바로 주지 않고 개념과 힌트로 생각하게 돕습니다.
-    - "다음 힌트 줘", "2단계 알려줘"로 질문해 보세요!
+    - 1인당 하루 최대 5회까지 질문할 수 있습니다.
     """)
     if st.button("대화 내용 초기화", use_container_width=True):
         st.session_state.messages = []
@@ -190,7 +191,7 @@ with st.sidebar:
 st.title("📐 나만의 AI 수학 튜터")
 st.caption("유튜브 [AI 수학 선생님] 구독자 전용 1:1 맞춤형 힌트 서비스")
 
-# 🔒 [구독자 인증 화면]: 비밀번호를 모르면 튜터창이 열리지 않음
+# 🔒 [구독자 인증 화면]
 if not st.session_state.is_authenticated:
     st.markdown("---")
     st.info("🔒 **본 서비스는 유튜브 채널 구독자 전용 서비스입니다.**")
@@ -213,7 +214,28 @@ if not st.session_state.is_authenticated:
     st.stop()
 
 # --- 6. 인증 완료된 학생용 튜터 화면 ---
-st.success("🔓 구독자 인증 완료! 질문이나 문제 사진을 올려보세요.")
+# ⏳ 1일 5회 질문 제한 계산
+remaining_count = max(0, DAILY_LIMIT - st.session_state.question_count)
+
+if not st.session_state.is_admin:
+    st.info(f"⏳ **오늘 남은 질문 횟수:** `{remaining_count}회` / `{DAILY_LIMIT}회`")
+else:
+    st.success("👑 관리자 모드: 질문 횟수 무제한")
+
+# 기존 대화 내역 출력
+for msg in st.session_state.messages:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+        if "image" in msg and msg["image"] is not None:
+            st.image(msg["image"], caption="업로드한 문제", use_container_width=True)
+
+# 질문 횟수 소진 여부 확인
+if not st.session_state.is_admin and remaining_count <= 0:
+    st.warning("⚠️ **오늘 사용 가능한 질문 횟수(5회)를 모두 사용했습니다!**\n\n내일 다시 만나요. 오늘 배운 내용을 복습해 보세요! 화이팅! 📚")
+    st.stop()
+
+uploaded_file = st.file_uploader("문제 사진 업로드 (선택 사항)", type=["png", "jpg", "jpeg"])
+user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (예: 1단계 힌트 줘, 어떻게 시작해?)")
 
 # 시스템 프롬프트
 SYSTEM_PROMPT = """
@@ -227,15 +249,6 @@ SYSTEM_PROMPT = """
 4. 학생이 "잘 모르겠어", "다음 힌트 줘", "풀어줘"라고 요청하면 그 다음 단계 힌트나 풀이를 단계적으로 제시합니다.
 5. 모든 수학 공식이나 기호는 반드시 마크다운 수식 기호인 $...$(인라인) 또는 $$...$$(블록)를 사용하여 학생이 읽기 쉽게 작성하세요.
 """
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "image" in msg and msg["image"] is not None:
-            st.image(msg["image"], caption="업로드한 문제", use_container_width=True)
-
-uploaded_file = st.file_uploader("문제 사진 업로드 (선택 사항)", type=["png", "jpg", "jpeg"])
-user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (예: 1단계 힌트 줘, 어떻게 시작해?)")
 
 if user_question:
     if not api_key:
@@ -261,8 +274,10 @@ if user_question:
             "mime_type": "image/jpeg"
         })
 
+    # 학생이 올린 질문 및 사진 자동 저장
     save_student_submission(user_question, current_image)
 
+    # 화면 표시
     with st.chat_message("user"):
         st.markdown(user_question)
         if current_image:
@@ -274,6 +289,7 @@ if user_question:
         "image": current_image
     })
 
+    # AI 답변 생성
     with st.chat_message("assistant"):
         with st.spinner("선생님이 문제를 분석하고 있어요... 💭"):
             try:
@@ -288,5 +304,10 @@ if user_question:
                     "role": "assistant",
                     "content": ai_reply
                 })
+                
+                # ★ 질문 1회 사용 차감 및 새로고침 반영
+                st.session_state.question_count += 1
+                st.rerun()
+
             except Exception as e:
                 st.error(f"오류가 발생했습니다: {e}")
