@@ -326,7 +326,7 @@ if user_question:
         with st.spinner("AI 수학쌤이 문제를 분석하고 있어요... 💭"):
             try:
                 response = client.interactions.create(
-                    model="gemini-4-hydrogen",
+                    model="gemini-2.5-flash",
                     input=input_payload
                 )
                 ai_reply = response.output_text
