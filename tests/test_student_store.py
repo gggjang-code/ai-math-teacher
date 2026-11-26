@@ -39,9 +39,9 @@ class StoreTests(unittest.TestCase):
     def test_problem_and_single_image_upload(self):
         self.store.save_problem(self.pid, "어떻게 풀어요?", b"fake image", "jpg", "image/jpeg")
         self.assertEqual(len(self.opener.calls), 2)
-        self.assertIn("/storage/v1/object/student-questions/" + self.pid, self.opener.calls[0][0])
-        self.assertIn("/rest/v1/student_problems", self.opener.calls[1][0])
-        row = json.loads(self.opener.calls[1][2])
+        self.assertIn("/rest/v1/student_problems", self.opener.calls[0][0])
+        self.assertIn("/storage/v1/object/student-questions/" + self.pid, self.opener.calls[1][0])
+        row = json.loads(self.opener.calls[0][2])
         self.assertEqual(row["initial_question"], "어떻게 풀어요?")
         self.assertEqual(row["file_sha256"], __import__("hashlib").sha256(b"fake image").hexdigest())
 
@@ -74,6 +74,21 @@ class StoreTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.store.save_problem(self.pid, "q", b"data", "exe", "application/octet-stream")
         self.assertFalse(self.opener.calls)
+
+    def test_modern_secret_key_sent_without_invalid_bearer(self):
+        modern = StudentStore("https://example.supabase.co", "sb_secret_test_only",
+                              opener=self.opener)
+        modern.save_turn("a"*32, self.pid, "학생", "질문")
+        headers = self.opener.calls[-1][3]
+        self.assertEqual(headers["Apikey"], "sb_secret_test_only")
+        self.assertNotIn("Authorization", headers)
+
+    def test_private_download_requires_authentication(self):
+        self.store.download_attachment(self.pid + "/problem.pdf")
+        self.assertIn("/storage/v1/object/authenticated/student-questions/",
+                      self.opener.calls[-1][0])
+        with self.assertRaises(ValueError):
+            self.store.download_attachment("other/problem.pdf")
 
     def test_http_error_omits_credentials(self):
         def fail(req, timeout=15):
