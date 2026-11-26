@@ -99,7 +99,7 @@ class StudentStore:
         return file_path
 
     def download_attachment(self, file_path: str) -> bytes:
-        if not re.fullmatch(r"Q-[a-f0-9]{12}/problem\\.(?:png|jpe?g|pdf)", file_path):
+        if not re.fullmatch(r"Q-[a-f0-9]{12}/problem\.(?:png|jpe?g|pdf)", file_path):
             raise ValueError("Invalid attachment path")
         payload = self._call(
             f"/storage/v1/object/{self.BUCKET}/{quote(file_path, safe='/')}", raw=True)
