@@ -38,8 +38,8 @@ MAX_RESPONSE_TOKENS = 1600
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
-DEFAULT_SUBSCRIBER_PW = "수학1234"
-DEFAULT_ADMIN_PIN = "7777"
+DEFAULT_SUBSCRIBER_PW = ""
+DEFAULT_ADMIN_PIN = ""
 
 def get_secret(key_name, default_val=""):
     """관리자가 화면에서 변경한 파일 우선 확인 후 Streamlit Secrets 확인"""
@@ -195,9 +195,11 @@ with st.sidebar:
         st.header("⚙️ 채널 관리 메뉴")
         with st.expander("👑 관리자 설정 (선생님 전용)", expanded=True):
             if not st.session_state.is_admin:
+                if not current_admin_pin:
+                    st.warning("관리자 PIN이 설정되지 않았습니다. Streamlit Secrets에서 ADMIN_PIN을 설정하세요.")
                 admin_input = st.text_input("관리자 PIN 번호 입력", type="password")
                 if st.button("관리자 로그인", use_container_width=True):
-                    if admin_input == current_admin_pin:
+                    if current_admin_pin and admin_input == current_admin_pin:
                         st.session_state.is_admin = True
                         st.success("관리자로 인증되었습니다!")
                         st.rerun()
@@ -432,8 +434,10 @@ if not st.session_state.is_authenticated:
     with col_btn:
         enter_btn = st.button("입장하기 🚀", use_container_width=True)
         
+    if not current_subscriber_pw:
+        st.error("구독자 인증 비밀번호가 설정되지 않았습니다. 관리자에게 문의하세요.")
     if enter_btn:
-        if user_pw_input.strip() == current_subscriber_pw:
+        if current_subscriber_pw and user_pw_input.strip() == current_subscriber_pw:
             st.session_state.is_authenticated = True
             st.success("🎉 인증 성공! 환영합니다.")
             st.rerun()
