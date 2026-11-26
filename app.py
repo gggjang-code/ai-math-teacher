@@ -14,6 +14,7 @@ from PIL import Image
 import fitz  # PyMuPDF
 from google import genai
 from google.genai import types
+from student_store import StudentStore, StorageError
 
 # --- 1. 기본 경로 및 파일 관리 ---
 BASE_DIR = Path(__file__).parent
@@ -63,6 +64,23 @@ def get_secret(key_name, default_val=""):
 
     return os.environ.get(key_name, default_val)
 
+def configure_student_store():
+    """Only use remote storage when BOTH server-side secrets are configured."""
+    url = get_secret("SUPABASE_URL", "")
+    key = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
+    if bool(url) != bool(key):
+        raise ValueError("학생 기록 영구 저장 설정이 일부만 입력되었습니다.")
+    return StudentStore(url, key) if url and key else None
+
+
+STUDENT_STORE_CONFIG_ERROR = ""
+try:
+    STUDENT_STORE = configure_student_store()
+except ValueError as storage_config_error:
+    STUDENT_STORE = None
+    STUDENT_STORE_CONFIG_ERROR = str(storage_config_error)
+
+
 def save_local_file(file_path, value_str):
     try:
         file_path.write_text(value_str.strip(), encoding="utf-8")
@@ -96,6 +114,9 @@ def save_problem_file_once(problem_id, original_bytes, extension):
 
 
 def save_conversation_turn(problem_id, role, content, status="ok"):
+    if STUDENT_STORE is not None:
+        STUDENT_STORE.save_turn(uuid.uuid4().hex, problem_id, role, content, status)
+        return
     now = datetime.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
     append_csv_record(
         CONVERSATION_LOG_FILE,
@@ -134,6 +155,9 @@ current_subscriber_pw = get_secret("SUBSCRIBER_PW", DEFAULT_SUBSCRIBER_PW)
 current_admin_pin = get_secret("ADMIN_PIN", DEFAULT_ADMIN_PIN)
 
 # 세션 상태 초기화
+if STUDENT_STORE is None:
+    st.warning("⚠️ 임시 서버 저장 모드입니다. 서버 재시작 시 학생 질문과 사진이 유실될 수 있습니다. 영구 저장소 연결 전에는 실제 학생에게 배포하지 마세요.")
+
 if "is_authenticated" not in st.session_state:
     st.session_state.is_authenticated = False
 if "is_admin" not in st.session_state:
@@ -214,6 +238,34 @@ with st.sidebar:
                 st.markdown("---")
                 # [4] 수집된 질문 통계 및 로그
                 st.subheader("📊 콘텐츠 소재 보관함")
+                if STUDENT_STORE is not None:
+                    st.success("영구 저장소 연결: 비공개 클라우드 저장")
+                    try:
+                        remote_problems = STUDENT_STORE.recent_problems(200)
+                        st.write(f"☁️ 영구 저장된 문제: **{len(remote_problems)}건** (최근 200건)")
+                        if remote_problems:
+                            remote_labels = [f"{p['created_at']} · {p['problem_id']} · {p['initial_question'][:45]}"
+                                             for p in remote_problems]
+                            selected_remote_index = st.selectbox("문제별 전체 대화", range(len(remote_labels)),
+                                                                 format_func=lambda i: remote_labels[i])
+                            selected_remote = remote_problems[selected_remote_index]
+                            saved_turns = STUDENT_STORE.turns_for_problem(selected_remote["problem_id"])
+                            for turn in saved_turns:
+                                st.markdown(f"**{turn['role']} · {turn['created_at']}**")
+                                st.write(turn['content'])
+                            if selected_remote.get("file_path"):
+                                attachment = STUDENT_STORE.download_attachment(selected_remote["file_path"])
+                                ext = selected_remote["file_path"].rsplit(".", 1)[-1].lower()
+                                if ext == "pdf":
+                                    st.download_button("📄 문제 PDF 다운로드", attachment,
+                                                       file_name=selected_remote["problem_id"] + ".pdf",
+                                                       mime="application/pdf")
+                                else:
+                                    st.image(attachment, caption="저장된 문제 사진", use_container_width=True)
+                    except (StorageError, ValueError) as e:
+                        st.error(f"영구 저장소 조회 실패: {e}")
+                else:
+                    st.warning("영구 저장소가 연결되지 않았습니다. 아래 목록은 현재 서버의 임시 파일만 보여줍니다.")
                 saved_images = sorted(
                     [
                         path
@@ -519,21 +571,39 @@ if user_question:
             "mime_type": "image/jpeg",
         })
 
-    # Index and attachment are stored once, independent of follow-up turn count.
+    # Index and attachment are stored exactly once per problem.
+    if STUDENT_STORE_CONFIG_ERROR:
+        st.error(STUDENT_STORE_CONFIG_ERROR)
+        st.stop()
     if first_attempt:
-        file_name = ""
-        if upload_bytes is not None:
-            ext = ("pdf" if uploaded_file.type == "application/pdf"
-                   else uploaded_file.name.rsplit(".", 1)[-1])
-            file_name = save_problem_file_once(problem_id, upload_bytes, ext)
-        save_question_index(problem_id, user_question, file_name)
+        try:
+            file_name = ""
+            if STUDENT_STORE is not None:
+                ext = ("pdf" if uploaded_file and uploaded_file.type == "application/pdf"
+                       else uploaded_file.name.rsplit(".", 1)[-1].lower() if uploaded_file else None)
+                mime = (uploaded_file.type if uploaded_file is not None else None)
+                file_name = STUDENT_STORE.save_problem(
+                    problem_id, user_question, upload_bytes, ext, mime) or ""
+            else:
+                if upload_bytes is not None:
+                    ext = ("pdf" if uploaded_file.type == "application/pdf"
+                           else uploaded_file.name.rsplit(".", 1)[-1])
+                    file_name = save_problem_file_once(problem_id, upload_bytes, ext)
+                save_question_index(problem_id, user_question, file_name)
+        except (StorageError, ValueError, OSError) as e:
+            st.error(f"문제 저장 실패: {e}. 개인정보 보호를 위해 질문 전송을 중단했습니다.")
+            st.stop()
 
     with st.chat_message("user"):
         st.markdown(user_question)
         if is_new_problem and st.session_state.cached_preview is not None:
             st.image(st.session_state.cached_preview, caption="업로드한 문제", use_container_width=True)
 
-    save_conversation_turn(problem_id, "학생", user_question)
+    try:
+        save_conversation_turn(problem_id, "학생", user_question)
+    except (StorageError, OSError) as e:
+        st.error(f"학생 질문 저장 실패: {e}. AI 전송을 중단했습니다.")
+        st.stop()
     st.session_state.messages.append({
         "role": "user",
         "content": user_question,
@@ -572,7 +642,12 @@ if user_question:
                 raise RuntimeError("AI에서 답변 텍스트를 받지 못했습니다.")
 
             placeholder.markdown(full_reply)
-            save_conversation_turn(problem_id, "AI", full_reply)
+            ai_record_saved = True
+            try:
+                save_conversation_turn(problem_id, "AI", full_reply)
+            except (StorageError, OSError) as e:
+                ai_record_saved = False
+                st.error(f"AI 답변이 표시되었지만 영구 저장에 실패했습니다: {e}. 대화를 종료하지 말고 관리자에게 알려 주세요.")
 
             st.session_state.messages.append({
                 "role": "assistant",
@@ -580,12 +655,16 @@ if user_question:
             })
             if is_new_problem:
                 st.session_state.question_count += 1
-            st.rerun()
+            if ai_record_saved:
+                st.rerun()
 
         except Exception as e:
             if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
                 st.session_state.messages.pop()
-            save_conversation_turn(problem_id, "시스템", "AI 응답 실패", status="error")
+            try:
+                save_conversation_turn(problem_id, "시스템", "AI 응답 실패", status="error")
+            except (StorageError, OSError):
+                st.warning("실패 기록 저장도 완료되지 않았습니다.")
             error_text = str(e)
             if "timed out" in error_text.lower() or "timeout" in error_text.lower():
                 st.error("응답이 지연되고 있어 45초 후 중단했어요. 잠시 후 다시 시도해 주세요.")
