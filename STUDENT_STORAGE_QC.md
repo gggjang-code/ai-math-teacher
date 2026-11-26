@@ -12,17 +12,17 @@ Supabase Free 프로젝트의 사용량·보관량·비활성화 정책은 가�
 
 ## 서버 소유자가 1회 수행할 작업
 1. Supabase에서 **무료 프로젝트**를 신규 생성합니다. 프로젝트 URL과 서버 전용 **service_role 키**를 확인합니다.
-   서비스 역할 키는 절대 코드·GitHub·채팅에 입력하지 않고 Streamlit의 **Secrets**에만 저장합니다.
+   서버 전용 비밀키(sb_secret_...)는 절대 코드·GitHub·채팅에 입력하지 않고 Streamlit의 **Secrets**에만 저장합니다.
 2. SQL Editor에서 `setup_private_storage.sql`을 1회 실행합니다.
    `student_problems`, `student_turns` 테이블은 RLS 활성화, 익명 사용자 접근 불가이며 Storage bucket은 private입니다.
 3. Streamlit Community Cloud → 해당 앱 → Settings → Secrets에 아래 항목을 추가합니다.
    ```toml
    SUPABASE_URL = "https://본인프로젝트.supabase.co"
-   SUPABASE_SERVICE_ROLE_KEY = "서버전용_비밀키"
+   SUPABASE_SECRET_KEY = "서버전용_비밀키"
    ADMIN_PIN = "관리자만_아는_충분히_긴_PIN"
    SUBSCRIBER_PW = "현재_구독자_인증_비밀번호"
    ```
-   **위 예시는 양식이며 실제 비밀키를 누구에게도 전송하지 마세요.**
+   **위 예시는 양식이며 실제 비밀키를 누구에게도 전송하지 마세요.** `sb_publishable_` 키는 저장소 관리에 사용할 수 없으므로 `sb_secret_` 서버 비밀키를 선택하세요.
 4. 인증정보 설정 후에도 **운영 main이 아닌 테스트 배포**에서 먼저 시험합니다.
 
 ## 반드시 통과해야 하는 통합 QC
@@ -45,4 +45,4 @@ Supabase Free 프로젝트의 사용량·보관량·비활성화 정책은 가�
 - 기존 `student_questions/` 데이터를 삭제하지 마세요.
 - 새 저장소 연결은 과거 로컬 자료를 자동 마이그레이션하지 않습니다.
 - 학생 개인정보 처리방침·보유기간 및 보호자 동의 등은 운영 전 검토해야 합니다.
-\n## 중요: 기본 인증번호 제거\n이 개발 브랜치는 기존의 공개 코드에 있던 기본 관리자 PIN과 구독자 비밀번호를 제거했습니다.\n새 테스트 배포 전 Streamlit Secrets에 `ADMIN_PIN`, `SUBSCRIBER_PW`도 반드시 설정하세요.\n이 값을 설정하지 않으면 관리자 로그인과 구독자 입장이 잠겨 있습니다.\n
+\n## 중요: 기본 인증번호 제거\n이 개발 브랜치는 기존의 공개 코드에 있던 기본 관리자 PIN과 구독자 비밀번호를 제거했습니다.\n새 테스트 배포 전 Streamlit Secrets에 `ADMIN_PIN`, `SUBSCRIBER_PW`도 반드시 설정하세요.\n이 값을 설정하지 않으면 관리자 로그인과 구독자 입장이 잠겨 있습니다.\n\n## 실사용 검증을 위한 연결 승인\n사용자가 Supabase 프로젝트를 만든 후 위 SQL을 실행하고 Streamlit Secrets에 서버 비밀키를 등록했다는 사실만 알려주세요.\n비밀키는 채팅으로 공유하지 않습니다. Secrets는 서버 코드가 읽고 브라우저로 노출하지 않습니다.\n이 설정은 현재 배포된 main에는 아직 반영되지 않습니다. 개발 브랜치로 별도 테스트 배포해 실사용 QC를 먼저 시행한 후 운영 반영합니다.\n
