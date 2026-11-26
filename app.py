@@ -31,10 +31,10 @@ PROBLEM_INDEX_FILE = QUESTIONS_DIR / "problem_index_v2.csv"
 DAILY_LIMIT = 5
 
 # AI 응답 속도 설정: 원본 사진/PDF 전체를 보내지 않고 문제를 읽을 정도로만 축소합니다.
-MAX_IMAGE_SIDE = 1280
+MAX_IMAGE_SIDE = 1600
 GEMINI_TIMEOUT_MS = 60_000
 INTERACTION_TIMEOUT_SECONDS = 45
-MAX_RESPONSE_TOKENS = 1600
+MAX_RESPONSE_TOKENS = 2500
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
@@ -520,9 +520,6 @@ if user_question:
         st.warning("오늘 새 문제 5회를 모두 사용했습니다.")
         st.stop()
     first_attempt = st.session_state.problem_id is None
-    if first_attempt:
-        st.session_state.problem_id = "Q-" + uuid.uuid4().hex[:12]
-    problem_id = st.session_state.problem_id
 
     client = genai.Client(api_key=api_key,
                           http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
@@ -548,6 +545,11 @@ if user_question:
         st.session_state.problem_image_b64 = base64.b64encode(fast_jpeg).decode("utf-8")
         st.session_state.cached_preview = preview
         st.session_state.uploaded_digest = upload_hash
+
+    # Allocate an ID only after a valid image/PDF has been decoded.
+    if first_attempt:
+        st.session_state.problem_id = "Q-" + uuid.uuid4().hex[:12]
+    problem_id = st.session_state.problem_id
 
     history_text = "\n".join(
         f"[{'학생' if msg['role'] == 'user' else 'AI 수학쌤'}]: {msg['content']}"
