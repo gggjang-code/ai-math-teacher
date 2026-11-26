@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - fix/student-tutor-reliability-20261126
+      - main
 
 jobs:
   syntax-and-tests:
