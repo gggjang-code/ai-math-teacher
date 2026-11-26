@@ -36,7 +36,7 @@ class StudentStore:
         self.opener = opener or urlopen
 
     def _call(self, path: str, *, method="GET", data=None, mime="application/json",
-              prefer=None):
+              prefer=None, raw=False):
         headers = {
             "apikey": self.key,
             "Authorization": "Bearer " + self.key,
@@ -50,7 +50,7 @@ class StudentStore:
         try:
             with self.opener(req, timeout=15) as response:
                 payload = response.read()
-                return json.loads(payload) if payload else None
+                return payload if raw else (json.loads(payload) if payload else None)
         except HTTPError as error:
             # No secret or student-submitted content in error messages.
             raise StorageError(f"Remote storage returned HTTP {error.code}") from None
@@ -97,6 +97,13 @@ class StudentStore:
                    data=json.dumps(row, ensure_ascii=False).encode("utf-8"),
                    prefer="return=minimal")
         return file_path
+
+    def download_attachment(self, file_path: str) -> bytes:
+        if not re.fullmatch(r"Q-[a-f0-9]{12}/problem\\.(?:png|jpe?g|pdf)", file_path):
+            raise ValueError("Invalid attachment path")
+        payload = self._call(
+            f"/storage/v1/object/{self.BUCKET}/{quote(file_path, safe='/')}", raw=True)
+        return payload or b""
 
     def save_turn(self, turn_id: str, problem_id: str, role: str, content: str,
                   status="ok"):
