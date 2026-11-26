@@ -54,6 +54,20 @@ class StoreTests(unittest.TestCase):
         self.assertTrue(all(row["problem_id"] == self.pid for row in rows))
         self.assertNotEqual(rows[0]["turn_id"], rows[1]["turn_id"])
 
+    def test_eight_hint_turns_share_one_problem_photo(self):
+        self.store.save_problem(self.pid, "새 문제", b"image-only-once", "png", "image/png")
+        for i in range(1, 9):
+            self.store.save_turn(f"{i:032x}", self.pid, "학생", f"{i}단계 힌트 주세요")
+            self.store.save_turn(f"{i+100:032x}", self.pid, "AI", f"{i}단계 힌트입니다")
+        photo_uploads = [call for call in self.opener.calls
+                         if "/storage/v1/object/" in call[0] and call[1] == "POST"]
+        turn_writes = [call for call in self.opener.calls
+                       if "/rest/v1/student_turns" in call[0] and call[1] == "POST"]
+        self.assertEqual(len(photo_uploads), 1)
+        self.assertEqual(len(turn_writes), 16)
+        self.assertEqual({json.loads(call[2])["problem_id"] for call in turn_writes},
+                         {self.pid})
+
     def test_fails_closed_on_invalid_id_and_mime(self):
         with self.assertRaises(ValueError):
             self.store.save_problem("../etc", "q")
