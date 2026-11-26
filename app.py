@@ -293,28 +293,43 @@ with st.sidebar:
                 else:
                     st.warning("영구 저장소가 연결되지 않았습니다. 아래 목록은 현재 서버의 임시 파일만 보여줍니다.")
                 saved_images = sorted(
-                    [
-                        path
-                        for path in QUESTIONS_DIR.iterdir()
-                        if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}
-                    ],
-                    key=lambda path: path.stat().st_mtime,
-                    reverse=True,
+                    [p for p in QUESTIONS_DIR.iterdir()
+                     if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}],
+                    key=lambda p: p.stat().st_mtime, reverse=True,
                 )
                 saved_pdfs = sorted(QUESTIONS_DIR.glob("*.pdf"), reverse=True)
-                st.write(f"📸 수집된 문제 사진: **{len(saved_images)}개**")
-                st.write(f"📄 수집된 PDF: **{len(saved_pdfs)}개**")
+                if STUDENT_STORE is not None:
+                    try:
+                        cloud_problems = STUDENT_STORE.recent_problems(500)
+                        cloud_images = sum(
+                            str(p.get("file_path") or "").lower().endswith((".png", ".jpg", ".jpeg"))
+                            for p in cloud_problems
+                        )
+                        cloud_pdfs = sum(
+                            str(p.get("file_path") or "").lower().endswith(".pdf")
+                            for p in cloud_problems
+                        )
+                        st.write(f"☁️ 영구 저장된 문제 사진: **{cloud_images}개**")
+                        st.write(f"☁️ 영구 저장된 PDF: **{cloud_pdfs}개**")
+                        if len(cloud_problems) == 500:
+                            st.caption("위 수량은 최근 500개 문제 기준입니다.")
+                    except StorageError as error:
+                        cloud_problems = []
+                        st.error(f"클라우드 저장 건수를 읽지 못했습니다: {error}")
+                else:
+                    cloud_problems = []
+                with st.expander("📁 현재 서버 임시 자료 (클라우드와 별개)", expanded=False):
+                    st.caption(f"서버 임시 사진 {len(saved_images)}개 / PDF {len(saved_pdfs)}개. 재시작 시 사라질 수 있습니다.")
 
                 today_kst = datetime.datetime.now(ZoneInfo("Asia/Seoul"))
                 today_date_text = today_kst.strftime("%Y-%m-%d")
                 today_file_prefix = today_kst.strftime("%Y%m%d")
                 today_media = [
-                    path
-                    for path in [*saved_images, *saved_pdfs]
-                    if path.name.startswith(today_file_prefix)
+                    p for p in [*saved_images, *saved_pdfs]
+                    if p.name.startswith(today_file_prefix)
                 ]
                 today_log_count = 0
-                
+
                 if LOG_FILE.exists():
                     import pandas as pd
                     try:
@@ -324,30 +339,72 @@ with st.sidebar:
                             today_log_count = int(today_mask.sum())
                         st.dataframe(df.tail(5), use_container_width=True)
                         st.download_button(
-                            "📥 전체 질문 내역 CSV 다운로드",
+                            "📥 임시 서버 질문 CSV 다운로드",
                             data=LOG_FILE.read_bytes(),
-                            file_name="AI_수학쌤_학생질문_전체내역.csv",
+                            file_name="AI_수학쌤_임시서버_질문.csv",
                             mime="text/csv",
                             use_container_width=True,
                         )
                     except Exception:
                         pass
 
-                with st.expander("💾 현재 서버 기록 전체 백업", expanded=False):
-                    st.caption("Streamlit 서버에 현재 남아 있는 자료만 백업합니다. 영구 저장은 별도 연결이 필요합니다.")
-                    if st.button("기록 ZIP 준비", key="prepare_student_backup", use_container_width=True):
-                        memory_file = BytesIO()
-                        with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as archive:
-                            for stored_file in QUESTIONS_DIR.rglob("*"):
-                                if stored_file.is_file():
-                                    archive.write(stored_file, arcname=stored_file.relative_to(QUESTIONS_DIR).as_posix())
-                        st.session_state.student_backup_data = memory_file.getvalue()
-                    if st.session_state.get("student_backup_data"):
-                        st.download_button("📥 서버 기록 ZIP 다운로드",
-                                           data=st.session_state.student_backup_data,
-                                           file_name="AI_Math_Teacher_student_questions_backup.zip",
-                                           mime="application/zip", use_container_width=True)
-
+                with st.expander("💾 Supabase 사진·전체 대화 ZIP 백업", expanded=False):
+                    st.caption(
+                        "클라우드에 자동 저장된 원본 사진/PDF와 학생·AI 대화를 한 ZIP으로 만듭니다. "
+                        "일상적인 확인에는 내려받을 필요가 없습니다."
+                    )
+                    if STUDENT_STORE is None:
+                        st.warning("클라우드 저장소가 연결되지 않았습니다.")
+                    else:
+                        st.caption("최근 최대 500개 문제를 백업합니다. 500건 이상이면 전체 백업이 아닙니다.")
+                        if st.button("☁️ 클라우드 백업 ZIP 준비", key="prepare_cloud_backup",
+                                     use_container_width=True):
+                            st.session_state.pop("cloud_student_backup_data", None)
+                            try:
+                                from io import StringIO
+                                result = BytesIO()
+                                index_buf = StringIO()
+                                index_writer = csv.writer(index_buf)
+                                index_writer.writerow(["문제ID", "저장일시", "최초 질문", "원본 파일 경로", "대화 건수"])
+                                with st.spinner("클라우드에서 원본 파일과 전체 대화를 모으는 중입니다."):
+                                    with zipfile.ZipFile(result, "w", zipfile.ZIP_DEFLATED) as archive:
+                                        for entry in cloud_problems:
+                                            pid = entry["problem_id"]
+                                            turns = STUDENT_STORE.turns_for_problem(pid)
+                                            transcript = StringIO()
+                                            turn_writer = csv.writer(transcript)
+                                            turn_writer.writerow(["일시", "역할", "내용", "상태"])
+                                            for t in turns:
+                                                turn_writer.writerow([
+                                                    t.get("created_at", ""),
+                                                    t.get("role", ""),
+                                                    t.get("content", ""),
+                                                    t.get("status", ""),
+                                                ])
+                                            archive.writestr(f"{pid}/전체대화.csv",
+                                                             "\ufeff" + transcript.getvalue())
+                                            filepath = entry.get("file_path")
+                                            if filepath:
+                                                original = STUDENT_STORE.download_attachment(filepath)
+                                                archive.writestr(filepath, original)
+                                            index_writer.writerow([
+                                                pid, entry.get("created_at", ""),
+                                                entry.get("initial_question", ""),
+                                                filepath or "", len(turns),
+                                            ])
+                                        archive.writestr("문제목록.csv", "\ufeff" + index_buf.getvalue())
+                                st.session_state.cloud_student_backup_data = result.getvalue()
+                                st.success(f"{len(cloud_problems)}개 문제의 클라우드 ZIP 준비 완료")
+                            except (StorageError, ValueError, OSError) as error:
+                                st.error(f"클라우드 ZIP 생성 실패: {error}")
+                        if st.session_state.get("cloud_student_backup_data"):
+                            st.download_button(
+                                "📥 사진·대화 ZIP 다운로드",
+                                data=st.session_state.cloud_student_backup_data,
+                                file_name="AI_Math_Teacher_클라우드_원본사진_전체대화.zip",
+                                mime="application/zip", use_container_width=True,
+                                key="download_cloud_student_backup",
+                            )
                 if CONVERSATION_LOG_FILE.exists():
                     with st.expander("💬 학생·AI 대화 전체 기록", expanded=False):
                         try:
