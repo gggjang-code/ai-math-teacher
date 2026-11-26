@@ -437,6 +437,58 @@ with st.sidebar:
                 else:
                     st.caption("아직 수집된 문제 사진이 없습니다.")
 
+                with st.expander("🗑️ Supabase 테스트 기록 삭제 (영구 삭제)", expanded=False):
+                    st.caption(
+                        "임시 서버 초기화와 다릅니다. 클라우드 원본 사진·PDF와 모든 대화를 "
+                        "선택한 문제 ID에 한해서 영구 삭제합니다. 삭제 후 복구할 수 없습니다."
+                    )
+                    approved_test_ids = {"Q-b28e02eac67d", "Q-fa23ae75a054"}
+                    if STUDENT_STORE is None:
+                        st.warning("Supabase 연결이 필요합니다.")
+                    else:
+                        try:
+                            candidates = [
+                                p for p in STUDENT_STORE.recent_problems(500)
+                                if p.get("problem_id") in approved_test_ids
+                            ]
+                            st.write(f"이번에 삭제 승인된 테스트 문제: **{len(candidates)}건**")
+                            for p in candidates:
+                                st.caption(
+                                    f"{p['problem_id']} · {str(p.get('initial_question', ''))[:60]}"
+                                )
+                            typed = st.text_input(
+                                "두 테스트 문제와 모든 대화·첨부 파일을 삭제하려면 '테스트2건삭제' 입력",
+                                key="cloud_delete_two_confirm",
+                            )
+                            if st.button(
+                                "🗑️ 승인된 테스트 2건 영구 삭제",
+                                disabled=typed.strip() != "테스트2건삭제" or not candidates,
+                                key="cloud_delete_two_button",
+                                use_container_width=True,
+                            ):
+                                removed_ids = []
+                                for item in candidates:
+                                    try:
+                                        STUDENT_STORE.delete_problem(
+                                            item["problem_id"], item.get("file_path")
+                                        )
+                                        removed_ids.append(item["problem_id"])
+                                    except (StorageError, ValueError) as error:
+                                        st.error(
+                                            f"{item['problem_id']} 삭제 오류: {error}. "
+                                            "이미 삭제된 문제는 다시 삭제하지 않습니다."
+                                        )
+                                        break
+                                if removed_ids:
+                                    st.success(
+                                        f"Supabase 테스트 문제 {len(removed_ids)}건의 "
+                                        "첨부 파일과 대화를 삭제했습니다."
+                                    )
+                                    st.session_state.pop("cloud_student_backup_data", None)
+                                    st.rerun()
+                        except (StorageError, ValueError) as error:
+                            st.error(f"삭제 대상 조회 실패: {error}")
+
                 with st.expander("🧹 오늘 테스트 자료만 초기화", expanded=False):
                     st.write(
                         f"{today_date_text}(한국 시간) 대상: "
