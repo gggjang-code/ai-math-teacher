@@ -489,6 +489,43 @@ with st.sidebar:
                         except (StorageError, ValueError) as error:
                             st.error(f"삭제 대상 조회 실패: {error}")
 
+                    st.divider()
+                    st.caption("앞으로 새로 생기는 테스트 기록은 아래에서 문제별로 선택 삭제할 수 있습니다.")
+                    try:
+                        cloud_selectable = STUDENT_STORE.recent_problems(500)
+                        if cloud_selectable:
+                            chosen_index = st.selectbox(
+                                "영구 삭제할 문제 선택",
+                                range(len(cloud_selectable)),
+                                format_func=lambda i: (
+                                    f"{cloud_selectable[i]['problem_id']} · "
+                                    f"{str(cloud_selectable[i].get('initial_question', ''))[:35]}"
+                                ),
+                                key="cloud_select_single_delete",
+                            )
+                            item = cloud_selectable[chosen_index]
+                            exact_id = st.text_input(
+                                f"실수로 삭제하지 않도록 문제 ID {item['problem_id']} 입력",
+                                key="cloud_delete_one_confirm",
+                            )
+                            if st.button(
+                                "선택한 문제·원본·전체 대화 영구 삭제",
+                                disabled=exact_id.strip() != item["problem_id"],
+                                key="cloud_delete_one_button",
+                                use_container_width=True,
+                            ):
+                                try:
+                                    STUDENT_STORE.delete_problem(
+                                        item["problem_id"], item.get("file_path")
+                                    )
+                                    st.session_state.pop("cloud_student_backup_data", None)
+                                    st.success(f"{item['problem_id']} 삭제 완료")
+                                    st.rerun()
+                                except (StorageError, ValueError) as error:
+                                    st.error(f"삭제 실패: {error}")
+                    except (StorageError, ValueError) as error:
+                        st.error(f"클라우드 문제 목록 조회 실패: {error}")
+
                 with st.expander("🧹 오늘 테스트 자료만 초기화", expanded=False):
                     st.write(
                         f"{today_date_text}(한국 시간) 대상: "
