@@ -242,6 +242,9 @@ with st.sidebar:
 
                 st.markdown("---")
                 # [4] 수집된 질문 통계 및 로그
+                if st.button("🗂️ 사진·전체 대화 한눈에 보기", use_container_width=True, type="primary", key="open_archive"):
+                    st.query_params["view"] = "archive"
+                    st.rerun()
                 st.subheader("📊 콘텐츠 소재 보관함")
                 if STUDENT_STORE is not None:
                     st.success("영구 저장소 연결: 비공개 클라우드 저장")
@@ -443,6 +446,92 @@ with st.sidebar:
 # --- 5. 메인 화면 ---
 st.title("📐 AI 수학쌤 (AI Math Teacher)")
 st.caption("유튜브 [@AI수학쌤] 구독자 전용 1:1 맞춤형 힌트 과외 서비스")
+
+# --- 관리자 전용 문제·대화 통합 보관함: 사진과 대화를 같은 화면에 표시 ---
+if st.session_state.is_admin and st.query_params.get("view", "") == "archive":
+    st.header("🗂️ 학생 문제·대화 통합 보관함")
+    st.caption("학생이 올린 원본 사진/PDF와 전체 대화를 문제별로 함께 확인합니다. 다운로드는 선택 사항입니다.")
+    if st.button("← 학생 튜터 화면으로 돌아가기", key="exit_archive"):
+        st.query_params.pop("view", None)
+        st.rerun()
+    if STUDENT_STORE is None:
+        st.error("영구 저장소가 연결되지 않았습니다. Streamlit Secrets를 확인하세요.")
+    else:
+        try:
+            all_problems = STUDENT_STORE.recent_problems(500)
+            search_query = st.text_input("🔎 문제 검색 (질문 내용·문제 ID·저장일)", key="archive_search")
+            if search_query.strip():
+                q = search_query.strip().casefold()
+                problems = [p for p in all_problems if
+                            q in str(p.get("problem_id", "")).casefold()
+                            or q in str(p.get("initial_question", "")).casefold()
+                            or q in str(p.get("created_at", "")).casefold()]
+            else:
+                problems = all_problems
+            st.write(f"**저장된 문제 {len(all_problems)}건 · 검색 결과 {len(problems)}건**")
+            if not problems:
+                st.info("조건에 맞는 문제 기록이 없습니다.")
+            else:
+                selected = st.selectbox(
+                    "📚 확인할 문제",
+                    options=range(len(problems)),
+                    format_func=lambda i: (
+                        f"{i + 1}. {str(problems[i].get('created_at', ''))[:16]} | "
+                        f"{str(problems[i].get('initial_question', ''))[:65]}"
+                    ),
+                    key="archive_problem_choice",
+                )
+                problem = problems[selected]
+                pid = problem["problem_id"]
+                st.markdown(f"**문제 ID:** `{pid}`")
+                media_col, chat_col = st.columns([1, 1.3], gap="large")
+                with media_col:
+                    st.subheader("📸 원본 문제")
+                    filepath = problem.get("file_path")
+                    if filepath:
+                        try:
+                            original = STUDENT_STORE.download_attachment(filepath)
+                            ext = filepath.rsplit(".", 1)[-1].lower()
+                            if ext == "pdf":
+                                with fitz.open(stream=original, filetype="pdf") as doc:
+                                    if doc.page_count:
+                                        st.image(doc[0].get_pixmap(dpi=135, alpha=False).tobytes("png"),
+                                                 caption=f"PDF 첫 페이지 (전체 {doc.page_count}쪽)",
+                                                 use_container_width=True)
+                                mime_type = "application/pdf"
+                            else:
+                                st.image(original, caption="학생이 올린 원본 사진",
+                                         use_container_width=True)
+                                mime_type = "image/png" if ext == "png" else "image/jpeg"
+                            with st.expander("원본 파일 내려받기 (선택)"):
+                                st.download_button(
+                                    "📥 원본 저장",
+                                    data=original,
+                                    file_name=f"{pid}.{ext}",
+                                    mime=mime_type,
+                                    key=f"archive_download_{pid}",
+                                )
+                        except (StorageError, ValueError, RuntimeError) as error:
+                            st.warning(f"원본 파일 열기 실패: {error}")
+                    else:
+                        st.info("첨부 파일 없이 질문한 문제입니다.")
+                    st.markdown("**학생 최초 질문**")
+                    st.write(problem.get("initial_question") or "(내용 없음)")
+                with chat_col:
+                    st.subheader("💬 학생·AI 전체 대화")
+                    turns = STUDENT_STORE.turns_for_problem(pid)
+                    st.caption(f"총 {len(turns)}건 · 최초 질문부터 시간순")
+                    if not turns:
+                        st.info("저장된 대화가 없습니다.")
+                    for turn in turns:
+                        role = str(turn.get("role", ""))
+                        display_name = "학생" if role == "학생" else "AI 수학쌤" if role == "AI" else role
+                        st.markdown(f"**{display_name}** · {str(turn.get('created_at', ''))[:19]}")
+                        st.markdown(str(turn.get("content", "")))
+                        st.divider()
+        except (StorageError, ValueError) as error:
+            st.error(f"자료 조회 오류: {error}")
+    st.stop()
 
 # 🔒 [구독자 인증 화면]
 if not st.session_state.is_authenticated:
