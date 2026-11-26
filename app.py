@@ -15,6 +15,7 @@ import fitz  # PyMuPDF
 from google import genai
 from google.genai import types
 from student_store import StudentStore, StorageError
+from tutoring_context import build_tutoring_context
 
 # --- 1. 기본 경로 및 파일 관리 ---
 BASE_DIR = Path(__file__).parent
@@ -573,10 +574,7 @@ if user_question:
         st.session_state.problem_id = "Q-" + uuid.uuid4().hex[:12]
     problem_id = st.session_state.problem_id
 
-    history_text = "\n".join(
-        f"[{'학생' if msg['role'] == 'user' else 'AI 수학쌤'}]: {msg['content']}"
-        for msg in st.session_state.messages[-24:]
-    )
+    history_text = build_tutoring_context(st.session_state.messages)
     if is_new_problem:
         context_instruction = (
             "이번은 새로운 문제의 첫 질문입니다. 이전 대화가 있다고 가정하지 마세요. "
