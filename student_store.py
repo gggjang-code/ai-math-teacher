@@ -29,19 +29,18 @@ class StudentStore:
         parsed = urlsplit(cleaned)
         if parsed.scheme != "https" or not parsed.hostname or parsed.path not in ("", "/"):
             raise ValueError("SUPABASE_URL must be a project https URL")
-        if not secret_key:
-            raise ValueError("Supabase server key is missing")
+        if not secret_key or secret_key.startswith("sb_publishable_"):
+            raise ValueError("Supabase server secret key is missing or invalid")
         self.url = cleaned
         self.key = secret_key
         self.opener = opener or urlopen
 
     def _call(self, path: str, *, method="GET", data=None, mime="application/json",
               prefer=None, raw=False):
-        headers = {
-            "apikey": self.key,
-            "Authorization": "Bearer " + self.key,
-            "Accept": "application/json",
-        }
+        # Modern sb_secret keys are not JWTs and must not be used as bearer tokens.
+        headers = {"apikey": self.key, "Accept": "application/json"}
+        if not self.key.startswith("sb_secret_"):
+            headers["Authorization"] = "Bearer " + self.key
         if data is not None:
             headers["Content-Type"] = mime
         if prefer:
@@ -102,7 +101,8 @@ class StudentStore:
         if not re.fullmatch(r"Q-[a-f0-9]{12}/problem\.(?:png|jpe?g|pdf)", file_path):
             raise ValueError("Invalid attachment path")
         payload = self._call(
-            f"/storage/v1/object/{self.BUCKET}/{quote(file_path, safe='/')}", raw=True)
+            f"/storage/v1/object/authenticated/{self.BUCKET}/{quote(file_path, safe='/')}",
+            raw=True)
         return payload or b""
 
     def save_turn(self, turn_id: str, problem_id: str, role: str, content: str,
