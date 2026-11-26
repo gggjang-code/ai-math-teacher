@@ -421,7 +421,7 @@ user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (�
 # 시스템 프롬프트
 SYSTEM_PROMPT = """
 당신은 대한민국 최고의 친절하고 유능한 유튜브 'AI 수학쌤'입니다.
-학생이 문제를 올렸을 때 절대로 처음부터 최종 답을 바로 전부 알려주지 마세요.
+학생이 처음 문제를 올렸을 때는 첫 힌트부터 시작하되, 전체 풀이를 명시적으로 요청하면 정답과 검산까지 끝까지 설명하세요.
 
 [답변 원칙]
 1. 친절하고 격려하는 말투(~해요, ~해볼까요?)를 사용합니다.
@@ -493,9 +493,9 @@ if user_question:
         st.session_state.cached_preview = preview
         st.session_state.uploaded_digest = upload_hash
 
-    history_text = "\\n".join(
+    history_text = "\n".join(
         f"[{'학생' if msg['role'] == 'user' else 'AI 수학쌤'}]: {msg['content']}"
-        for msg in st.session_state.messages[-8:]
+        for msg in st.session_state.messages[-24:]
     )
     if is_new_problem:
         context_instruction = (
@@ -508,8 +508,8 @@ if user_question:
             "학생이 전체 풀이를 요청하면 계산과 최종 정답까지 완료하세요."
         )
     input_payload = [{"type": "text", "text": (
-        f"{SYSTEM_PROMPT}\\n\\n{context_instruction}\\n\\n"
-        f"[이 문제의 대화]\\n{history_text or '(없음)'}\\n\\n"
+        f"{SYSTEM_PROMPT}\n\n{context_instruction}\n\n"
+        f"[이 문제의 대화]\n{history_text or '(없음)'}\n\n"
         f"[현재 학생 질문]: {user_question}"
     )}]
     if st.session_state.problem_image_b64:
