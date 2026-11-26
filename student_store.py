@@ -133,7 +133,7 @@ class StudentStore:
         problem_id = self._id(problem_id)
         if file_path:
             if not re.fullmatch(
-                re.escape(problem_id) + r"/problem\\.(?:png|jpe?g|pdf)", file_path
+                re.escape(problem_id) + r"/problem\.(?:png|jpe?g|pdf)", file_path
             ):
                 raise ValueError("Attachment does not belong to the problem")
             payload = json.dumps({"prefixes": [file_path]}).encode("utf-8")
