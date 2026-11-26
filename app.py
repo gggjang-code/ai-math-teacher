@@ -245,8 +245,18 @@ with st.sidebar:
                 if STUDENT_STORE is not None:
                     st.success("영구 저장소 연결: 비공개 클라우드 저장")
                     try:
-                        remote_problems = STUDENT_STORE.recent_problems(200)
-                        st.write(f"☁️ 영구 저장된 문제: **{len(remote_problems)}건** (최근 200건)")
+                        remote_problems = STUDENT_STORE.recent_problems(500)
+                        st.caption("영상 제작 소재 검색: 문제 ID·최초 질문·날짜 (최근 최대 500건)")
+                        material_search = st.text_input("🔎 문제 소재 검색", key="student_material_search")
+                        if material_search.strip():
+                            search_value = material_search.strip().casefold()
+                            remote_problems = [
+                                p for p in remote_problems
+                                if search_value in p["problem_id"].casefold()
+                                or search_value in p["initial_question"].casefold()
+                                or search_value in p["created_at"].casefold()
+                            ]
+                        st.write(f"☁️ 조회된 문제: **{len(remote_problems)}건**")
                         if remote_problems:
                             remote_labels = [f"{p['created_at']} · {p['problem_id']} · {p['initial_question'][:45]}"
                                              for p in remote_problems]
@@ -265,7 +275,15 @@ with st.sidebar:
                                                        file_name=selected_remote["problem_id"] + ".pdf",
                                                        mime="application/pdf")
                                 else:
-                                    st.image(attachment, caption="저장된 문제 사진", use_container_width=True)
+                                    st.image(attachment, caption="원본 문제 사진 (영상 제작 소재 검토용)",
+                                             use_container_width=True)
+                                    st.download_button(
+                                        "📥 원본 문제 사진 다운로드",
+                                        data=attachment,
+                                        file_name=selected_remote["problem_id"] + "." + ext,
+                                        mime="image/png" if ext == "png" else "image/jpeg",
+                                        key="download_original_student_photo"
+                                    )
                     except (StorageError, ValueError) as e:
                         st.error(f"영구 저장소 조회 실패: {e}")
                 else:
