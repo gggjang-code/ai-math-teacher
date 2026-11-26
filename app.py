@@ -67,7 +67,7 @@ def get_secret(key_name, default_val=""):
 def configure_student_store():
     """Only use remote storage when BOTH server-side secrets are configured."""
     url = get_secret("SUPABASE_URL", "")
-    key = get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
+    key = get_secret("SUPABASE_SECRET_KEY", "") or get_secret("SUPABASE_SERVICE_ROLE_KEY", "")
     if bool(url) != bool(key):
         raise ValueError("학생 기록 영구 저장 설정이 일부만 입력되었습니다.")
     return StudentStore(url, key) if url and key else None
