@@ -3,6 +3,10 @@ import base64
 import os
 import csv
 import datetime
+import hashlib
+import uuid
+import time
+import zipfile
 from zoneinfo import ZoneInfo
 from pathlib import Path
 from io import BytesIO
@@ -19,15 +23,17 @@ ADMIN_PIN_FILE = BASE_DIR / ".admin_pin"
 QUESTIONS_DIR = BASE_DIR / "student_questions"
 QUESTIONS_DIR.mkdir(parents=True, exist_ok=True)
 LOG_FILE = QUESTIONS_DIR / "questions_log.csv"
+CONVERSATION_LOG_FILE = QUESTIONS_DIR / "conversation_log.csv"
+PROBLEM_INDEX_FILE = QUESTIONS_DIR / "problem_index_v2.csv"
 
 # 1인당 하루 질문 제한 횟수
 DAILY_LIMIT = 5
 
 # AI 응답 속도 설정: 원본 사진/PDF 전체를 보내지 않고 문제를 읽을 정도로만 축소합니다.
-MAX_IMAGE_SIDE = 1600
+MAX_IMAGE_SIDE = 1280
 GEMINI_TIMEOUT_MS = 60_000
 INTERACTION_TIMEOUT_SECONDS = 45
-MAX_RESPONSE_TOKENS = 700
+MAX_RESPONSE_TOKENS = 1600
 GEMINI_MODEL = "gemini-3.5-flash-lite"
 
 # 기본 비밀번호 초기화 (파일이나 Secrets가 없을 때)
@@ -65,31 +71,47 @@ def save_local_file(file_path, value_str):
         return False
 
 # --- 학생 질문 및 사진 자동 저장 ---
-def save_student_submission(user_question, image_obj=None, pdf_bytes=None, pdf_name=""):
-    now = datetime.datetime.now(ZoneInfo("Asia/Seoul"))
-    timestamp_str = now.strftime("%Y%m%d_%H%M%S")
-    saved_file_name = ""
+def append_csv_record(path, headers, record):
+    """Append a full question/answer record without overwriting existing data."""
+    new_file = not path.exists() or path.stat().st_size == 0
+    with open(path, "a", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        if new_file:
+            writer.writerow(headers)
+        writer.writerow(record)
 
-    if pdf_bytes is not None:
-        saved_file_name = f"{timestamp_str}_{pdf_name}"
-        pdf_path = QUESTIONS_DIR / saved_file_name
-        pdf_path.write_bytes(pdf_bytes)
-    elif image_obj is not None:
-        saved_file_name = f"{timestamp_str}_problem.jpg"
-        img_path = QUESTIONS_DIR / saved_file_name
-        # PNG/RGBA 이미지는 JPEG 저장 전 RGB 변환 필요
-        save_obj = image_obj.convert("RGB") if image_obj.mode in ("RGBA", "P", "LA", "CMYK") else image_obj
-        save_obj.save(img_path, format="JPEG")
 
-    file_exists = LOG_FILE.exists()
-    try:
-        with open(LOG_FILE, "a", newline="", encoding="utf-8-sig") as f:
-            writer = csv.writer(f)
-            if not file_exists:
-                writer.writerow(["일시", "문제사진파일명", "학생질문내용"])
-            writer.writerow([now.strftime("%Y-%m-%d %H:%M:%S"), saved_file_name if saved_file_name else "파일없음", user_question])
-    except Exception as e:
-        st.error(f"질문 기록 저장 중 오류: {e}")
+def save_problem_file_once(problem_id, original_bytes, extension):
+    """Store one attachment per problem; never save it again on hint turns."""
+    if not original_bytes:
+        return ""
+    extension = extension.lower().lstrip(".")
+    if extension not in {"pdf", "png", "jpg", "jpeg"}:
+        return ""
+    filename = f"{problem_id}.{extension}"
+    path = QUESTIONS_DIR / filename
+    if not path.exists():
+        path.write_bytes(original_bytes)
+    return filename
+
+
+def save_conversation_turn(problem_id, role, content, status="ok"):
+    now = datetime.datetime.now(ZoneInfo("Asia/Seoul")).isoformat(timespec="seconds")
+    append_csv_record(
+        CONVERSATION_LOG_FILE,
+        ["문제ID", "일시", "역할", "내용", "상태"],
+        [problem_id, now, role, content, status],
+    )
+
+
+def save_question_index(problem_id, user_question, file_name):
+    now = datetime.datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M:%S")
+    append_csv_record(
+        PROBLEM_INDEX_FILE,
+        ["일시", "문제사진파일명", "학생질문내용", "문제ID"],
+        [now, file_name or "파일없음", user_question, problem_id],
+    )
+
 
 def image_to_fast_jpeg(image_obj):
     """Gemini에 보낼 이미지를 눈으로 읽기에 충분한 크기의 JPEG로 축소한다."""
@@ -122,6 +144,14 @@ if "question_count" not in st.session_state:
     st.session_state.question_count = 0
 if "problem_image_b64" not in st.session_state:
     st.session_state.problem_image_b64 = None
+if "problem_id" not in st.session_state:
+    st.session_state.problem_id = None
+if "uploaded_digest" not in st.session_state:
+    st.session_state.uploaded_digest = None
+if "uploader_epoch" not in st.session_state:
+    st.session_state.uploader_epoch = 0
+if "cached_preview" not in st.session_state:
+    st.session_state.cached_preview = None
 
 # --- 3. 관리자 모드 감지 (URL에 ?admin=true 또는 세션 로그인 상태) ---
 is_admin_param = False
@@ -225,6 +255,34 @@ with st.sidebar:
                     except Exception:
                         pass
 
+                with st.expander("💾 현재 서버 기록 전체 백업", expanded=False):
+                    st.caption("Streamlit 서버에 현재 남아 있는 자료만 백업합니다. 영구 저장은 별도 연결이 필요합니다.")
+                    if st.button("기록 ZIP 준비", key="prepare_student_backup", use_container_width=True):
+                        memory_file = BytesIO()
+                        with zipfile.ZipFile(memory_file, "w", zipfile.ZIP_DEFLATED) as archive:
+                            for stored_file in QUESTIONS_DIR.rglob("*"):
+                                if stored_file.is_file():
+                                    archive.write(stored_file, arcname=stored_file.relative_to(QUESTIONS_DIR).as_posix())
+                        st.session_state.student_backup_data = memory_file.getvalue()
+                    if st.session_state.get("student_backup_data"):
+                        st.download_button("📥 서버 기록 ZIP 다운로드",
+                                           data=st.session_state.student_backup_data,
+                                           file_name="AI_Math_Teacher_student_questions_backup.zip",
+                                           mime="application/zip", use_container_width=True)
+
+                if CONVERSATION_LOG_FILE.exists():
+                    with st.expander("💬 학생·AI 대화 전체 기록", expanded=False):
+                        try:
+                            import pandas as pd
+                            conversation_df = pd.read_csv(CONVERSATION_LOG_FILE, encoding="utf-8-sig")
+                            st.dataframe(conversation_df.tail(300), use_container_width=True)
+                            st.download_button("📥 전체 대화 CSV 다운로드",
+                                               data=CONVERSATION_LOG_FILE.read_bytes(),
+                                               file_name="AI_수학쌤_전체대화.csv",
+                                               mime="text/csv", use_container_width=True)
+                        except Exception as e:
+                            st.warning(f"대화 기록을 읽을 수 없습니다: {e}")
+
                 if saved_images:
                     with st.expander("🖼️ 학생 문제 사진 갤러리", expanded=False):
                         selected_name = st.selectbox(
@@ -300,6 +358,10 @@ with st.sidebar:
     if st.button("새 문제 시작", use_container_width=True):
         st.session_state.messages = []
         st.session_state.problem_image_b64 = None
+        st.session_state.problem_id = None
+        st.session_state.uploaded_digest = None
+        st.session_state.cached_preview = None
+        st.session_state.uploader_epoch += 1
         st.rerun()
 
 # --- 5. 메인 화면 ---
@@ -351,7 +413,9 @@ if not st.session_state.is_admin and remaining_count <= 0 and not st.session_sta
     st.warning("⚠️ **오늘 사용 가능한 새 문제 5개를 모두 사용했습니다!**\n\n내일 다시 만나요. 오늘 배운 내용을 복습해 보세요! 화이팅! 📚")
     st.stop()
 
-uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드 (선택 사항)", type=["png", "jpg", "jpeg", "pdf"])
+uploaded_file = st.file_uploader("문제 사진 또는 PDF 업로드 (선택 사항)",
+                                 type=["png", "jpg", "jpeg", "pdf"],
+                                 key=f"problem_upload_{st.session_state.uploader_epoch}")
 user_question = st.chat_input("질문이나 풀이 상황을 입력하세요 (예: 1단계 힌트 줘, 어떻게 시작해?)")
 
 # 시스템 프롬프트
@@ -380,96 +444,100 @@ if user_question:
         st.error("⚠️ 선생님의 API Key 설정이 필요합니다. 관리자 메뉴에서 API 키를 확인해 주세요.")
         st.stop()
 
-    is_new_problem = len(st.session_state.messages) == 0
+    upload_bytes = uploaded_file.getvalue() if uploaded_file is not None else None
+    upload_hash = hashlib.sha256(upload_bytes).hexdigest() if upload_bytes is not None else None
 
-    # 요청 단위 네트워크 상한. 전체 응답 시간은 Interactions 호출에서 별도로 제한합니다.
-    client = genai.Client(
-        api_key=api_key,
-        http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS),
+    # A different attachment starts a new problem, not another hint on the previous one.
+    attachment_changed = (
+        upload_hash is not None
+        and upload_hash != st.session_state.uploaded_digest
+        and bool(st.session_state.messages)
     )
+    if attachment_changed:
+        st.session_state.messages = []
+        st.session_state.problem_image_b64 = None
+        st.session_state.problem_id = None
+        st.session_state.cached_preview = None
 
-    current_image = None
-    current_pdf_bytes = None
-    current_pdf_name = ""
+    is_new_problem = len(st.session_state.messages) == 0
+    if is_new_problem and not st.session_state.is_admin and remaining_count <= 0:
+        st.warning("오늘 새 문제 5회를 모두 사용했습니다.")
+        st.stop()
+    first_attempt = st.session_state.problem_id is None
+    if first_attempt:
+        st.session_state.problem_id = "Q-" + uuid.uuid4().hex[:12]
+    problem_id = st.session_state.problem_id
 
-    # 최근 대화를 함께 보내 "다음 힌트"가 앞선 문제와 풀이를 이어가게 합니다.
-    recent_messages = st.session_state.messages[-8:]
-    history_lines = []
-    for msg in recent_messages:
-        speaker = "학생" if msg["role"] == "user" else "AI 수학쌤"
-        history_lines.append(f"[{speaker}]: {msg['content']}")
-    history_text = "\n".join(history_lines) if history_lines else "(첫 질문)"
+    client = genai.Client(api_key=api_key,
+                          http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
+    preview = None
+    if upload_bytes is not None and (
+        upload_hash != st.session_state.uploaded_digest
+        or st.session_state.problem_image_b64 is None
+    ):
+        try:
+            if uploaded_file.type == "application/pdf":
+                with fitz.open(stream=upload_bytes, filetype="pdf") as doc:
+                    if doc.page_count == 0:
+                        st.error("내용이 없는 PDF입니다.")
+                        st.stop()
+                    preview = doc[0].get_pixmap(dpi=105, alpha=False).tobytes("png")
+                fast_jpeg = image_to_fast_jpeg(Image.open(BytesIO(preview)))
+            else:
+                preview = Image.open(BytesIO(upload_bytes)).copy()
+                fast_jpeg = image_to_fast_jpeg(preview)
+        except Exception:
+            st.error("문제 파일을 읽을 수 없습니다. 정상적인 사진 또는 PDF를 올려 주세요.")
+            st.stop()
+        st.session_state.problem_image_b64 = base64.b64encode(fast_jpeg).decode("utf-8")
+        st.session_state.cached_preview = preview
+        st.session_state.uploaded_digest = upload_hash
 
-    # --- 파일 처리 ---
-    input_payload = [{
-        "type": "text",
-        "text": (
-            f"{SYSTEM_PROMPT}\n\n"
-            f"[지금까지의 대화]\n{history_text}\n\n"
-            f"[현재 학생 질문]: {user_question}\n\n"
-            "이전 대화의 문제와 힌트 단계를 이어서 답하세요. "
-            "이미 제시한 힌트를 반복하지 마세요."
-        ),
-    }]
-
-    if uploaded_file is not None:
-        file_type = uploaded_file.type
-
-        if file_type == "application/pdf":
-            current_pdf_bytes = uploaded_file.read()
-            current_pdf_name = uploaded_file.name
-            # 학생 화면에서도 첫 페이지만 미리보기하므로 AI에게도 첫 페이지를 축소 이미지로 보냅니다.
-            with fitz.open(stream=current_pdf_bytes, filetype="pdf") as pdf_doc:
-                page = pdf_doc[0]
-                pix = page.get_pixmap(dpi=140, alpha=False)
-                pdf_image = Image.open(BytesIO(pix.tobytes("png")))
-                pdf_jpeg = image_to_fast_jpeg(pdf_image)
-                st.session_state.problem_image_b64 = base64.b64encode(pdf_jpeg).decode("utf-8")
-                input_payload.append({
-                    "type": "image",
-                    "data": st.session_state.problem_image_b64,
-                    "mime_type": "image/jpeg",
-                })
-        else:
-            image = Image.open(uploaded_file)
-            if image.mode in ("RGBA", "P", "LA", "CMYK"):
-                image = image.convert("RGB")
-            current_image = image
-            fast_jpeg = image_to_fast_jpeg(image)
-            st.session_state.problem_image_b64 = base64.b64encode(fast_jpeg).decode("utf-8")
-            input_payload.append({
-                "type": "image",
-                "data": st.session_state.problem_image_b64,
-                "mime_type": "image/jpeg",
-            })
-    elif st.session_state.problem_image_b64:
-        # 후속 질문에는 처음 올린 문제 이미지를 자동으로 다시 참조합니다.
+    history_text = "\\n".join(
+        f"[{'학생' if msg['role'] == 'user' else 'AI 수학쌤'}]: {msg['content']}"
+        for msg in st.session_state.messages[-8:]
+    )
+    if is_new_problem:
+        context_instruction = (
+            "이번은 새로운 문제의 첫 질문입니다. 이전 대화가 있다고 가정하지 마세요. "
+            "단원과 조건을 확인하고 첫 번째 힌트를 제공하세요."
+        )
+    else:
+        context_instruction = (
+            "같은 문제에 관한 후속 질문입니다. 이미 제시한 힌트를 반복하지 마세요. "
+            "학생이 전체 풀이를 요청하면 계산과 최종 정답까지 완료하세요."
+        )
+    input_payload = [{"type": "text", "text": (
+        f"{SYSTEM_PROMPT}\\n\\n{context_instruction}\\n\\n"
+        f"[이 문제의 대화]\\n{history_text or '(없음)'}\\n\\n"
+        f"[현재 학생 질문]: {user_question}"
+    )}]
+    if st.session_state.problem_image_b64:
         input_payload.append({
             "type": "image",
             "data": st.session_state.problem_image_b64,
             "mime_type": "image/jpeg",
         })
 
-    save_student_submission(user_question, current_image, current_pdf_bytes, current_pdf_name)
+    # Index and attachment are stored once, independent of follow-up turn count.
+    if first_attempt:
+        file_name = ""
+        if upload_bytes is not None:
+            ext = ("pdf" if uploaded_file.type == "application/pdf"
+                   else uploaded_file.name.rsplit(".", 1)[-1])
+            file_name = save_problem_file_once(problem_id, upload_bytes, ext)
+        save_question_index(problem_id, user_question, file_name)
 
     with st.chat_message("user"):
         st.markdown(user_question)
-        if current_image:
-            st.image(current_image, caption="업로드한 문제", use_container_width=True)
-        elif current_pdf_bytes:
-            try:
-                pdf_doc = fitz.open(stream=current_pdf_bytes, filetype="pdf")
-                page = pdf_doc[0]
-                pix = page.get_pixmap(dpi=120)
-                img_data = pix.tobytes("png")
-                st.image(img_data, caption=f"📄 PDF: {current_pdf_name} ({pdf_doc.page_count}페이지)", use_container_width=True)
-            except Exception:
-                st.info(f"📄 PDF 업로드됨: {current_pdf_name}")
+        if is_new_problem and st.session_state.cached_preview is not None:
+            st.image(st.session_state.cached_preview, caption="업로드한 문제", use_container_width=True)
 
+    save_conversation_turn(problem_id, "학생", user_question)
     st.session_state.messages.append({
         "role": "user",
         "content": user_question,
-        "image": current_image
+        "image": st.session_state.cached_preview if is_new_problem else None,
     })
 
     with st.chat_message("assistant"):
@@ -477,6 +545,7 @@ if user_question:
         placeholder.markdown("🔎 문제를 읽고 있어요...")
         full_reply = ""
         try:
+            last_ui_update = 0.0
             stream = client.interactions.create(
                 model=GEMINI_MODEL,
                 input=input_payload,
@@ -494,12 +563,16 @@ if user_question:
             for event in stream:
                 if event.event_type == "step.delta" and event.delta.type == "text":
                     full_reply += event.delta.text
-                    placeholder.markdown(full_reply + "▌")
+                    now = time.monotonic()
+                    if now - last_ui_update >= 0.18:
+                        placeholder.markdown(full_reply + "▌")
+                        last_ui_update = now
 
             if not full_reply:
                 raise RuntimeError("AI에서 답변 텍스트를 받지 못했습니다.")
 
             placeholder.markdown(full_reply)
+            save_conversation_turn(problem_id, "AI", full_reply)
 
             st.session_state.messages.append({
                 "role": "assistant",
@@ -510,6 +583,9 @@ if user_question:
             st.rerun()
 
         except Exception as e:
+            if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+                st.session_state.messages.pop()
+            save_conversation_turn(problem_id, "시스템", "AI 응답 실패", status="error")
             error_text = str(e)
             if "timed out" in error_text.lower() or "timeout" in error_text.lower():
                 st.error("응답이 지연되고 있어 45초 후 중단했어요. 잠시 후 다시 시도해 주세요.")
