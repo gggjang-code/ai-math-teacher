@@ -170,6 +170,8 @@ if "problem_image_b64" not in st.session_state:
     st.session_state.problem_image_b64 = None
 if "problem_id" not in st.session_state:
     st.session_state.problem_id = None
+if "problem_registered" not in st.session_state:
+    st.session_state.problem_registered = False
 if "uploaded_digest" not in st.session_state:
     st.session_state.uploaded_digest = None
 if "uploader_epoch" not in st.session_state:
@@ -413,6 +415,7 @@ with st.sidebar:
         st.session_state.messages = []
         st.session_state.problem_image_b64 = None
         st.session_state.problem_id = None
+        st.session_state.problem_registered = False
         st.session_state.uploaded_digest = None
         st.session_state.cached_preview = None
         st.session_state.uploader_epoch += 1
@@ -513,6 +516,7 @@ if user_question:
         st.session_state.messages = []
         st.session_state.problem_image_b64 = None
         st.session_state.problem_id = None
+        st.session_state.problem_registered = False
         st.session_state.cached_preview = None
 
     is_new_problem = len(st.session_state.messages) == 0
@@ -581,7 +585,7 @@ if user_question:
     if STUDENT_STORE_CONFIG_ERROR:
         st.error(STUDENT_STORE_CONFIG_ERROR)
         st.stop()
-    if first_attempt:
+    if not st.session_state.problem_registered:
         try:
             file_name = ""
             if STUDENT_STORE is not None:
@@ -596,6 +600,7 @@ if user_question:
                            else uploaded_file.name.rsplit(".", 1)[-1])
                     file_name = save_problem_file_once(problem_id, upload_bytes, ext)
                 save_question_index(problem_id, user_question, file_name)
+            st.session_state.problem_registered = True
         except (StorageError, ValueError, OSError) as e:
             st.error(f"문제 저장 실패: {e}. 개인정보 보호를 위해 질문 전송을 중단했습니다.")
             st.stop()
