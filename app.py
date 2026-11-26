@@ -450,7 +450,7 @@ st.caption("유튜브 [@AI수학쌤] 구독자 전용 1:1 맞춤형 힌트 과�
 # --- 관리자 전용 문제·대화 통합 보관함: 사진과 대화를 같은 화면에 표시 ---
 if st.session_state.is_admin and st.query_params.get("view", "") == "archive":
     st.header("🗂️ 학생 문제·대화 통합 보관함")
-    st.caption("학생이 올린 원본 사진/PDF와 전체 대화를 문제별로 함께 확인합니다. 다운로드는 선택 사항입니다.")
+    st.caption("왼쪽에 원본 사진/PDF, 오른쪽에 스크롤 가능한 전체 대화가 나옵니다. 다운로드는 선택 사항입니다.")
     if st.button("← 학생 튜터 화면으로 돌아가기", key="exit_archive"):
         st.query_params.pop("view", None)
         st.rerun()
@@ -521,14 +521,16 @@ if st.session_state.is_admin and st.query_params.get("view", "") == "archive":
                     st.subheader("💬 학생·AI 전체 대화")
                     turns = STUDENT_STORE.turns_for_problem(pid)
                     st.caption(f"총 {len(turns)}건 · 최초 질문부터 시간순")
-                    if not turns:
-                        st.info("저장된 대화가 없습니다.")
-                    for turn in turns:
-                        role = str(turn.get("role", ""))
-                        display_name = "학생" if role == "학생" else "AI 수학쌤" if role == "AI" else role
-                        st.markdown(f"**{display_name}** · {str(turn.get('created_at', ''))[:19]}")
-                        st.markdown(str(turn.get("content", "")))
-                        st.divider()
+                    st.caption("오른쪽 대화창 안쪽만 스크롤하면 왼쪽 원본 사진은 계속 보입니다.")
+                    with st.container(height=600, border=True):
+                        if not turns:
+                            st.info("저장된 대화가 없습니다.")
+                        for turn in turns:
+                            role = str(turn.get("role", ""))
+                            display_name = "학생" if role == "학생" else "AI 수학쌤" if role == "AI" else role
+                            st.markdown(f"**{display_name}** · {str(turn.get('created_at', ''))[:19]}")
+                            st.markdown(str(turn.get("content", "")))
+                            st.divider()
         except (StorageError, ValueError) as error:
             st.error(f"자료 조회 오류: {error}")
     st.stop()
