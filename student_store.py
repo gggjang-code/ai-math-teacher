@@ -78,13 +78,6 @@ class StudentStore:
                 raise ValueError("Attachment MIME type does not match extension")
             file_path = f"{problem_id}/problem.{suffix}"
             file_digest = hashlib.sha256(data).hexdigest()
-            object_url = f"/storage/v1/object/{self.BUCKET}/{file_path}"
-            # Create-only: retries must not silently overwrite existing submissions.
-            try:
-                self._call(object_url, method="POST", data=data, mime=mime,
-                           prefer="return=minimal")
-            except StorageError as error:
-                raise StorageError("Attachment could not be stored privately") from error
         row = {
             "problem_id": problem_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -92,9 +85,21 @@ class StudentStore:
             "file_path": file_path,
             "file_sha256": file_digest,
         }
-        self._call("/rest/v1/student_problems", method="POST",
+        # Insert the parent record first, so saving a chat turn cannot point to a
+        # non-existent problem. A retry after a dropped response is idempotent.
+        self._call("/rest/v1/student_problems?on_conflict=problem_id", method="POST",
                    data=json.dumps(row, ensure_ascii=False).encode("utf-8"),
-                   prefer="return=minimal")
+                   prefer="resolution=ignore-duplicates,return=minimal")
+        if file_path is not None:
+            object_url = f"/storage/v1/object/{self.BUCKET}/{file_path}"
+            try:
+                # Idempotent: the same problem ID can be retried, but never changes
+                # its uploaded content or creates an additional object.
+                self._call(object_url, method="POST", data=data, mime=mime,
+                           prefer="return=minimal")
+            except StorageError as error:
+                if "HTTP 409" not in str(error):
+                    raise StorageError("Attachment could not be stored privately") from error
         return file_path
 
     def download_attachment(self, file_path: str) -> bytes:
