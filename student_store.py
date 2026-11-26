@@ -123,6 +123,29 @@ class StudentStore:
                    data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
                    prefer="resolution=ignore-duplicates,return=minimal")
 
+    def delete_problem(self, problem_id: str, file_path: str | None = None):
+        """Permanently remove exactly one archived problem, its file and chat turns.
+
+        Caller must verify admin permission and obtain explicit user confirmation.
+        The Storage API is required to remove object bytes; SQL deletion of
+        storage.objects leaves orphaned files.
+        """
+        problem_id = self._id(problem_id)
+        if file_path:
+            if not re.fullmatch(
+                re.escape(problem_id) + r"/problem\\.(?:png|jpe?g|pdf)", file_path
+            ):
+                raise ValueError("Attachment does not belong to the problem")
+            payload = json.dumps({"prefixes": [file_path]}).encode("utf-8")
+            self._call(
+                f"/storage/v1/object/{self.BUCKET}",
+                method="DELETE", data=payload,
+            )
+        # Child records first: DB foreign key explicitly uses ON DELETE RESTRICT.
+        query = urlencode({"problem_id": "eq." + problem_id})
+        self._call("/rest/v1/student_turns?" + query, method="DELETE")
+        self._call("/rest/v1/student_problems?" + query, method="DELETE")
+
     def recent_problems(self, limit=100):
         params = urlencode({"select": "problem_id,created_at,initial_question,file_path",
                             "order": "created_at.desc", "limit": min(500, max(1, limit))})
