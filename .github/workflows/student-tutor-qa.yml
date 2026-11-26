@@ -15,6 +15,22 @@ jobs:
         with:
           python-version: '3.12'
       - name: Compile Python files
-        run: python -m compileall -q app.py student_store.py tests
-      - name: Storage unit tests
+        run: python -m compileall -q app.py student_store.py tutoring_context.py tests
+      - name: Storage and context unit tests
         run: python -m unittest discover -s tests -v
+      - name: Install app requirements
+        run: pip install -r requirements.txt
+      - name: Smoke test Streamlit app without personal keys
+        env:
+          ADMIN_PIN: "test-pin-not-for-production"
+          SUBSCRIBER_PW: "test-subscriber-password"
+          SUPABASE_URL: "https://example.supabase.co"
+          SUPABASE_SECRET_KEY: "sb_secret_test_only"
+        run: |
+          python - <<'PY'
+          from streamlit.testing.v1 import AppTest
+          at = AppTest.from_file("app.py", default_timeout=30).run()
+          assert not at.exception, [str(x) for x in at.exception]
+          assert any("AI 수학쌤" in x.value for x in at.title)
+          print("PASS: Streamlit app startup and subscriber login UI")
+          PY
